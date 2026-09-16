@@ -53,6 +53,9 @@ module.exports = {
           preload: { js: './src/preload/index.ts' }
         }]
       },
+      // Forge's default development CSP allows 'unsafe-eval' and inline scripts; the shell needs neither. Only the
+      // webpack live-reload socket on localhost is added to the packaged policy.
+      devContentSecurityPolicy: "default-src 'self'; script-src 'self'; style-src 'self'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws://localhost:*; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'",
       devServer: {
         client: { overlay: false },
         headers: {

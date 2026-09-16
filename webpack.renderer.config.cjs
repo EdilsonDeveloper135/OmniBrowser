@@ -1,9 +1,10 @@
 const rules = require('./webpack.rules.cjs');
 const MiniCssExtractPlugin = require('mini-css-extract-plugin');
 
-module.exports = {
+// See webpack.main.config.cjs: the build mode comes from Electron Forge, not from process.env at load time.
+module.exports = (_env, { mode }) => ({
   target: 'web',
-  devtool: process.env.NODE_ENV === 'production' ? false : 'source-map',
+  devtool: mode === 'production' ? false : 'source-map',
   module: {
     rules: [
       ...rules,
@@ -12,5 +13,5 @@ module.exports = {
   },
   plugins: [new MiniCssExtractPlugin({ filename: '[name].css' })],
   resolve: { extensions: ['.ts', '.tsx', '.js', '.css'] },
-  optimization: { minimize: process.env.NODE_ENV === 'production' }
-};
+  optimization: { minimize: mode === 'production' }
+});
