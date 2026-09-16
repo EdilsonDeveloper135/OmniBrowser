@@ -1,31 +1,28 @@
 import { ipcMain, type IpcMainInvokeEvent } from 'electron';
 import { IPC_CHANNELS } from '../../shared/constants';
+import type { IpcResult } from '../../shared/errors';
 import type { OmniBrowserController } from '../app-controller';
+import { runIpcAction } from './ipc-result';
 
-function assertShellSender(controller: OmniBrowserController, event: IpcMainInvokeEvent): void {
-  if (event.sender !== controller.window.webContents || event.senderFrame !== controller.window.webContents.mainFrame) {
-    throw new Error('Rejected IPC from a non-shell WebContents.');
-  }
+function isShellSender(controller: OmniBrowserController, event: IpcMainInvokeEvent): boolean {
+  const shell = controller.window.webContents;
+  return !shell.isDestroyed() && event.sender === shell && event.senderFrame === shell.mainFrame;
 }
 
 export function registerIpc(controller: OmniBrowserController): void {
-  const handle = (channel: string, action: (input: unknown) => unknown | Promise<unknown>) => {
+  const handle = (channel: string, action: (input: unknown) => unknown) => {
     ipcMain.removeHandler(channel);
-    ipcMain.handle(channel, async (event, input) => {
-      assertShellSender(controller, event);
-      return action(input);
-    });
-  };
-  const handleWithoutInput = (channel: string, action: () => unknown | Promise<unknown>) => {
-    ipcMain.removeHandler(channel);
-    ipcMain.handle(channel, async (event) => {
-      assertShellSender(controller, event);
-      return action();
+    ipcMain.handle(channel, async (event, input): Promise<IpcResult<unknown>> => {
+      if (!isShellSender(controller, event)) {
+        console.warn(`[omnibrowser] IPC rechazado desde un emisor que no es el shell: ${channel}`);
+        return { ok: false, error: { code: 'forbidden', message: 'Operación no permitida.' } };
+      }
+      return runIpcAction(channel, () => action(input));
     });
   };
 
-  handleWithoutInput(IPC_CHANNELS.bootstrap, () => controller.bootstrap());
-  handleWithoutInput(IPC_CHANNELS.profilesList, () => controller.listProfiles());
+  handle(IPC_CHANNELS.bootstrap, () => controller.bootstrap());
+  handle(IPC_CHANNELS.profilesList, () => controller.listProfiles());
   handle(IPC_CHANNELS.profilesCreatePersistent, (input) => controller.createPersistentProfile(input));
   handle(IPC_CHANNELS.profilesCreateTemporary, (input) => controller.createTemporaryProfile(input));
   handle(IPC_CHANNELS.browsersCreate, (input) => controller.createBrowser(input));
@@ -40,5 +37,5 @@ export function registerIpc(controller: OmniBrowserController): void {
   handle(IPC_CHANNELS.browsersWake, (input) => controller.wake(input));
   handle(IPC_CHANNELS.workspaceCommitLayout, (input) => controller.commitLayout(input));
   handle(IPC_CHANNELS.workspaceSetCamera, (input) => controller.setCamera(input));
-  handleWithoutInput(IPC_CHANNELS.workspaceSaveNow, () => controller.saveNow());
+  handle(IPC_CHANNELS.workspaceSaveNow, () => controller.saveNow());
 }

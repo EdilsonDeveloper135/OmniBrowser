@@ -4,19 +4,24 @@ import { app, BrowserWindow, screen, session } from 'electron';
 import { OmniBrowserController } from './app-controller';
 import { registerIpc } from './ipc/register-ipc';
 import { installShellProtocol, registerShellScheme, SHELL_SCHEME } from './protocol/shell-protocol';
-import { configureRestrictedSession, shellWebPreferences } from './security/security-policy';
+import { configureRestrictedSession, installWebContentsGuards, shellWebPreferences } from './security/security-policy';
 
 registerShellScheme();
 
-function configureE2eUserDataPath(): void {
+function configureUserDataPath(): void {
   const candidate = process.env.OMNIBROWSER_E2E_USER_DATA;
-  if (process.env.OMNIBROWSER_E2E !== '1' || !candidate) return;
-  const resolved = path.resolve(candidate);
-  const relativeToTemporaryDirectory = path.relative(os.tmpdir(), resolved);
-  if (relativeToTemporaryDirectory.startsWith('..') || path.isAbsolute(relativeToTemporaryDirectory)) {
-    throw new Error('OMNIBROWSER_E2E_USER_DATA must resolve inside the operating-system temporary directory.');
+  if (process.env.OMNIBROWSER_E2E === '1' && candidate) {
+    const resolved = path.resolve(candidate);
+    const relativeToTemporaryDirectory = path.relative(os.tmpdir(), resolved);
+    if (relativeToTemporaryDirectory.startsWith('..') || path.isAbsolute(relativeToTemporaryDirectory)) {
+      throw new Error('OMNIBROWSER_E2E_USER_DATA must resolve inside the operating-system temporary directory.');
+    }
+    app.setPath('userData', resolved);
+    return;
   }
-  app.setPath('userData', resolved);
+  // Unpackaged runs take their name from package.json ("omnibrowser") and packaged ones from the bundle ("OmniBrowser").
+  // On case-insensitive APFS both resolve to the same folder, so development would share real cookies and workspace.json.
+  if (!app.isPackaged) app.setPath('userData', path.join(app.getPath('appData'), 'OmniBrowser Development'));
 }
 
 function restoreWindowBounds(window: BrowserWindow, bounds: ReturnType<OmniBrowserController['snapshot']>['windowBounds']): void {
@@ -30,7 +35,10 @@ function restoreWindowBounds(window: BrowserWindow, bounds: ReturnType<OmniBrows
   if (intersectsDisplay) window.setBounds(bounds, false);
 }
 
-configureE2eUserDataPath();
+configureUserDataPath();
+
+let controller: OmniBrowserController | null = null;
+let windowCreation: Promise<void> | null = null;
 
 async function createMainWindow(): Promise<void> {
   configureRestrictedSession(session.defaultSession, () => undefined);
@@ -46,9 +54,10 @@ async function createMainWindow(): Promise<void> {
     trafficLightPosition: { x: 18, y: 18 },
     webPreferences: shellWebPreferences(MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY)
   });
-  const controller = await OmniBrowserController.create(window);
-  restoreWindowBounds(window, controller.snapshot().windowBounds);
-  registerIpc(controller);
+  const nextController = await OmniBrowserController.create(window);
+  controller = nextController;
+  restoreWindowBounds(window, nextController.snapshot().windowBounds);
+  registerIpc(nextController);
 
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event, url) => {
@@ -60,16 +69,45 @@ async function createMainWindow(): Promise<void> {
   await window.loadURL(await installShellProtocol());
 }
 
-app.whenReady().then(async () => {
-  await createMainWindow();
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) void createMainWindow();
+function openMainWindow(): Promise<void> {
+  windowCreation ??= createMainWindow().finally(() => {
+    windowCreation = null;
   });
-}).catch((error) => {
-  console.error(error);
-  app.exit(1);
-});
+  return windowCreation;
+}
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
+// One process per userData directory: two instances would race on workspace.json and on Chromium's profile storage.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  installWebContentsGuards(app);
+
+  app.on('second-instance', () => {
+    const window = controller?.window;
+    if (!window || window.isDestroyed()) return;
+    if (window.isMinimized()) window.restore();
+    window.focus();
+  });
+
+  // Quit (Cmd+Q, logout, SIGTERM) waits for the controller to persist and release its views, then resumes the quit.
+  // Without this, preventing the window close during a quit would cancel it and leave a windowless process running.
+  app.on('before-quit', (event) => {
+    if (!controller || controller.isShutDown) return;
+    event.preventDefault();
+    void controller.shutdown().then(() => app.quit());
+  });
+
+  app.whenReady().then(async () => {
+    await openMainWindow();
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) void openMainWindow();
+    });
+  }).catch((error) => {
+    console.error(error);
+    app.exit(1);
+  });
+
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit();
+  });
+}

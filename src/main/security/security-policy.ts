@@ -1,11 +1,13 @@
-import type { BrowserWindow, Session, WebPreferences } from 'electron';
+import type { App, BrowserWindow, Session, WebPreferences } from 'electron';
 import { dialog, shell } from 'electron';
 import { parseExternalUrl } from '../../shared/urls';
+import type { ExternalOpenGate } from './external-open-gate';
 
 export type SecurityNotice = (message: string) => void;
 
 const sessionNotices = new WeakMap<Session, SecurityNotice>();
 const sessionsWithDownloadPolicy = new WeakSet<Session>();
+const MAX_EXTERNAL_URL_PREVIEW = 300;
 
 export function remoteWebPreferences(profileSession: Session): WebPreferences {
   return {
@@ -19,6 +21,9 @@ export function remoteWebPreferences(profileSession: Session): WebPreferences {
     webviewTag: false,
     backgroundThrottling: true,
     enableWebSQL: false,
+    // JavaScript dialogs are window-modal in Electron; this lets the user stop a page that loops alert().
+    safeDialogs: true,
+    safeDialogsMessage: 'Impedir que esta página abra más diálogos',
     devTools: !process.env.NODE_ENV || process.env.NODE_ENV === 'development'
   };
 }
@@ -48,7 +53,8 @@ export function configureRestrictedSession(profileSession: Session, notice: Secu
   });
   profileSession.setDevicePermissionHandler(() => false);
   profileSession.setDisplayMediaRequestHandler((_request, callback) => callback({}));
-  profileSession.setUSBProtectedClassesHandler(() => []);
+  // Returning the received list keeps Chromium's default protected USB classes; an empty array would unprotect all of them.
+  profileSession.setUSBProtectedClassesHandler((details) => details.protectedClasses);
   if (sessionsWithDownloadPolicy.has(profileSession)) return;
   sessionsWithDownloadPolicy.add(profileSession);
   profileSession.on('will-download', (event) => {
@@ -57,22 +63,38 @@ export function configureRestrictedSession(profileSession: Session, notice: Secu
   });
 }
 
-export async function confirmAndOpenExternal(parent: BrowserWindow, value: string, notice: SecurityNotice): Promise<void> {
+/** Defense in depth for every WebContents, including ones created before OmniBrowser configures them. */
+export function installWebContentsGuards(electronApp: App): void {
+  electronApp.on('web-contents-created', (_event, contents) => {
+    contents.on('will-attach-webview', (attachEvent) => attachEvent.preventDefault());
+    contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  });
+}
+
+export async function confirmAndOpenExternal(parent: BrowserWindow, value: string, sourceId: number, gate: ExternalOpenGate, notice: SecurityNotice): Promise<void> {
   const parsed = parseExternalUrl(value);
   if (!parsed) {
     notice('OmniBrowser bloqueó un protocolo externo no permitido.');
     return;
   }
-  const result = await dialog.showMessageBox(parent, {
-    type: 'question',
-    buttons: ['Cancelar', 'Abrir'],
-    defaultId: 0,
-    cancelId: 0,
-    noLink: true,
-    title: 'Abrir aplicación externa',
-    message: `¿Quieres abrir ${parsed.protocol} fuera de OmniBrowser?`,
-    detail: parsed.toString()
-  });
-  if (result.response !== 1) return;
-  await shell.openExternal(parsed.toString(), { activate: true });
+  if (!gate.tryAcquire(sourceId)) {
+    notice('Se ignoraron aperturas externas repetidas de una página.');
+    return;
+  }
+  try {
+    const target = parsed.toString();
+    const result = await dialog.showMessageBox(parent, {
+      type: 'question',
+      buttons: ['Cancelar', 'Abrir'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+      title: 'Abrir aplicación externa',
+      message: `¿Quieres abrir ${parsed.protocol} fuera de OmniBrowser?`,
+      detail: target.length > MAX_EXTERNAL_URL_PREVIEW ? `${target.slice(0, MAX_EXTERNAL_URL_PREVIEW)}…` : target
+    });
+    if (result.response === 1) await shell.openExternal(target, { activate: true });
+  } finally {
+    gate.release(sourceId);
+  }
 }

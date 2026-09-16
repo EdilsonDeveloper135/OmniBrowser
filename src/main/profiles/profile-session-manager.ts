@@ -31,10 +31,12 @@ export class ProfileSessionManager {
     return profileSession;
   }
 
+  /** Flushes only sessions opened during this run; untouched profiles have nothing pending and must not be created now. */
   async flushPersistent(profiles: readonly ProfileRecord[]): Promise<void> {
     await Promise.all(profiles.filter((profile) => profile.kind === 'persistent').map(async (profile) => {
-      const profileSession = this.get(profile);
-      await profileSession.flushStorageData();
+      const profileSession = this.#sessions.get(profile.id);
+      if (!profileSession) return;
+      profileSession.flushStorageData();
       await profileSession.cookies.flushStore();
     }));
   }

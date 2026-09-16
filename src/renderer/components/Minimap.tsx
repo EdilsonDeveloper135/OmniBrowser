@@ -5,10 +5,11 @@ interface MinimapProps {
   camera: Camera;
   viewportSize: { width: number; height: number };
   selectedBrowserId: string | null;
+  hidden: boolean;
   onSelect: (browserId: string) => void;
 }
 
-export function Minimap({ browsers, camera, viewportSize, selectedBrowserId, onSelect }: MinimapProps) {
+export function Minimap({ browsers, camera, viewportSize, selectedBrowserId, hidden, onSelect }: MinimapProps) {
   if (browsers.length === 0) return null;
   const viewportWorld = {
     x: -camera.panX / camera.zoom,
@@ -29,7 +30,8 @@ export function Minimap({ browsers, camera, viewportSize, selectedBrowserId, onS
   });
 
   return (
-    <div className="minimap" aria-label="Minimapa del canvas">
+    // Hidden while a visible Chromium surface covers its corner: native views are drawn above React and would block it.
+    <div className="minimap" aria-label="Minimapa del canvas" hidden={hidden}>
       {browsers.map((browser) => (
         <button
           aria-label={`Activar navegador: ${browser.title}`}

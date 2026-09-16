@@ -2,6 +2,14 @@ import { z } from 'zod';
 import {
   DEFAULT_BROWSER_URL,
   MAX_BROWSER_COUNT_PER_LAYOUT_BATCH,
+  MAX_CAMERA_PAN,
+  MAX_HISTORY_ENTRIES,
+  MAX_SCREEN_COORDINATE,
+  MAX_SCREEN_SIZE,
+  MAX_TITLE_LENGTH,
+  MAX_URL_LENGTH,
+  MAX_WORLD_COORDINATE,
+  MAX_WORLD_SIZE,
   MAX_ZOOM,
   MIN_BROWSER_HEIGHT,
   MIN_BROWSER_WIDTH,
@@ -26,33 +34,33 @@ export const persistentProfileSchema = profileSchema.extend({
 }).strict();
 
 export const worldRectSchema = z.object({
-  x: z.number().finite().min(-1_000_000).max(1_000_000),
-  y: z.number().finite().min(-1_000_000).max(1_000_000),
-  width: z.number().finite().min(MIN_BROWSER_WIDTH).max(100_000),
-  height: z.number().finite().min(MIN_BROWSER_HEIGHT).max(100_000)
+  x: z.number().finite().min(-MAX_WORLD_COORDINATE).max(MAX_WORLD_COORDINATE),
+  y: z.number().finite().min(-MAX_WORLD_COORDINATE).max(MAX_WORLD_COORDINATE),
+  width: z.number().finite().min(MIN_BROWSER_WIDTH).max(MAX_WORLD_SIZE),
+  height: z.number().finite().min(MIN_BROWSER_HEIGHT).max(MAX_WORLD_SIZE)
 }).strict();
 
 export const screenRectSchema = z.object({
-  x: z.number().int().min(-100_000).max(100_000),
-  y: z.number().int().min(-100_000).max(100_000),
-  width: z.number().int().min(1).max(20_000),
-  height: z.number().int().min(1).max(20_000)
+  x: z.number().int().min(-MAX_SCREEN_COORDINATE).max(MAX_SCREEN_COORDINATE),
+  y: z.number().int().min(-MAX_SCREEN_COORDINATE).max(MAX_SCREEN_COORDINATE),
+  width: z.number().int().min(1).max(MAX_SCREEN_SIZE),
+  height: z.number().int().min(1).max(MAX_SCREEN_SIZE)
 }).strict();
 
 export const cameraSchema = z.object({
-  panX: z.number().finite().min(-1_000_000).max(1_000_000),
-  panY: z.number().finite().min(-1_000_000).max(1_000_000),
+  panX: z.number().finite().min(-MAX_CAMERA_PAN).max(MAX_CAMERA_PAN),
+  panY: z.number().finite().min(-MAX_CAMERA_PAN).max(MAX_CAMERA_PAN),
   zoom: z.number().finite().min(MIN_ZOOM).max(MAX_ZOOM)
 }).strict();
 
 export const historyEntrySchema = z.object({
-  url: z.string().min(1).max(4096),
-  title: z.string().max(512)
+  url: z.string().min(1).max(MAX_URL_LENGTH),
+  title: z.string().max(MAX_TITLE_LENGTH)
 }).strict();
 
 export const navigationHistorySchema = z.object({
-  entries: z.array(historyEntrySchema).max(500),
-  index: z.number().int().min(0).max(499)
+  entries: z.array(historyEntrySchema).max(MAX_HISTORY_ENTRIES),
+  index: z.number().int().min(0).max(MAX_HISTORY_ENTRIES - 1)
 }).strict();
 
 export const browserRecordSchema = z.object({
@@ -60,8 +68,8 @@ export const browserRecordSchema = z.object({
   profileId: uuidSchema,
   worldRect: worldRectSchema,
   zIndex: z.number().int().min(0).max(1_000_000),
-  url: z.string().min(1).max(4096).default(DEFAULT_BROWSER_URL),
-  title: z.string().max(512),
+  url: z.string().min(1).max(MAX_URL_LENGTH).default(DEFAULT_BROWSER_URL),
+  title: z.string().max(MAX_TITLE_LENGTH),
   history: navigationHistorySchema,
   suspended: z.boolean(),
   createdAt: isoDateSchema,
@@ -109,7 +117,8 @@ export const browserRuntimeStateSchema = z.object({
   crashed: z.boolean()
 }).strict();
 
-export const browserSnapshotSchema = browserRecordSchema.extend({
+// Snapshots sent to the shell omit the sanitized history: the renderer only needs canGoBack/canGoForward.
+export const browserSnapshotSchema = browserRecordSchema.omit({ history: true }).extend({
   runtime: browserRuntimeStateSchema
 }).strict();
 
@@ -130,13 +139,15 @@ export const createProfileInputSchema = z.object({ name: profileNameSchema }).st
 export const browserIdInputSchema = z.object({ browserId: uuidSchema }).strict();
 export const createBrowserInputSchema = z.object({ profileId: uuidSchema }).strict();
 export const assignProfileInputSchema = z.object({ browserId: uuidSchema, profileId: uuidSchema }).strict();
-export const navigateInputSchema = z.object({ browserId: uuidSchema, url: z.string().trim().min(1).max(4096) }).strict();
+// The URL policy (empty input, length after normalization, schemes) lives in normalizeNavigationInput; the schema only bounds the payload.
+export const navigateInputSchema = z.object({ browserId: uuidSchema, url: z.string().max(MAX_URL_LENGTH * 2) }).strict();
+export const focusInputSchema = z.object({ browserId: uuidSchema, focusContents: z.boolean().optional() }).strict();
 export const cameraInputSchema = z.object({ camera: cameraSchema }).strict();
 
+// z-order is owned by the main process (focus/create); the shell only reports geometry and native visibility.
 export const layoutItemSchema = z.object({
   browserId: uuidSchema,
   worldRect: worldRectSchema,
-  zIndex: z.number().int().min(0).max(1_000_000),
   screenBounds: screenRectSchema,
   visible: z.boolean()
 }).strict();

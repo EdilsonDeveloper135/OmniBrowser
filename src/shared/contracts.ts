@@ -27,7 +27,7 @@ export interface OmniBrowserApi {
     back(browserId: string): Promise<void>;
     forward(browserId: string): Promise<void>;
     reload(browserId: string): Promise<void>;
-    focus(browserId: string): Promise<WorkspaceSnapshot>;
+    focus(browserId: string, options?: { focusContents?: boolean }): Promise<WorkspaceSnapshot>;
     sleep(browserId: string): Promise<WorkspaceSnapshot>;
     wake(browserId: string): Promise<WorkspaceSnapshot>;
   };

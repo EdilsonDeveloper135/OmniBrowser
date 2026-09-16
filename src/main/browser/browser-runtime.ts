@@ -1,59 +1,68 @@
 import type { BrowserWindowConstructorOptions, Event, Session, WebContents } from 'electron';
 import { BrowserWindow, WebContentsView } from 'electron';
 import {
+  DEFAULT_BROWSER_URL,
   PROFILE_RAIL_WIDTH,
   STATUS_BAR_HEIGHT,
   TOOLBAR_HEIGHT
 } from '../../shared/constants';
-import type {
-  BrowserRecord,
-  BrowserRuntimeState,
-  LayoutBatch,
-  NavigationHistoryRecord,
-  ScreenRect
-} from '../../shared/schemas';
-import { isAllowedNavigationUrl, normalizeNavigationInput, parseExternalUrl } from '../../shared/urls';
-import { WorkspaceModel } from '../domain/workspace-model';
+import { OmniUserError } from '../../shared/errors';
+import type { BrowserRecord, BrowserRuntimeState, LayoutBatch, ScreenRect } from '../../shared/schemas';
+import { displayDomain, isAllowedNavigationUrl, isPersistableNavigationUrl, normalizeNavigationInput, parseExternalUrl } from '../../shared/urls';
+import { sanitizeHistory } from '../domain/navigation-history';
+import { BrowserNotFoundError, WorkspaceModel, type NavigationChange } from '../domain/workspace-model';
+import type { SaveUrgency } from '../lifecycle/save-scheduler';
 import { ProfileSessionManager } from '../profiles/profile-session-manager';
 import { remoteWebPreferences } from '../security/security-policy';
 
+const NET_ERROR_ABORTED = -3;
+// Chromium navigation/title events are coalesced per browser into at most one capture and one shell update per interval.
+const NAVIGATION_SYNC_INTERVAL_MS = 250;
+
 interface RuntimeEntry {
-  view: WebContentsView;
-  contents: WebContents;
-  state: BrowserRuntimeState;
+  readonly view: WebContentsView;
+  readonly contents: WebContents;
+  readonly contentsId: number;
+  readonly state: BrowserRuntimeState;
+  // Incremented by every navigation OmniBrowser starts; a restore fallback only runs if no newer navigation superseded it.
+  navigationToken: number;
+  appliedBounds: ScreenRect | null;
+  appliedVisible: boolean;
+  disposed: boolean;
 }
 
 interface BrowserRuntimeOptions {
   window: BrowserWindow;
   model: WorkspaceModel;
   sessions: ProfileSessionManager;
-  scheduleSave: () => void;
+  scheduleSave: (urgency?: SaveUrgency) => void;
   onModelChanged: () => void;
   onBrowserChanged: (browserId: string) => void;
   onNotice: (level: 'info' | 'warning' | 'error', message: string) => void;
-  onExternalUrl: (url: string) => void;
+  onExternalUrl: (url: string, sourceContentsId: number) => void;
+  onContentsDestroyed?: (contentsId: number) => void;
 }
 
-const sleepingState = (record: BrowserRecord): BrowserRuntimeState => ({
-  isAwake: false,
-  isLoading: false,
-  canGoBack: record.history.index > 0,
-  canGoForward: record.history.entries.length > 0 && record.history.index < record.history.entries.length - 1,
-  crashed: false
-});
+function sameBounds(a: ScreenRect | null, b: ScreenRect): boolean {
+  return a !== null && a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+}
 
 export class BrowserRuntime {
   readonly #window: BrowserWindow;
   readonly #model: WorkspaceModel;
   readonly #sessions: ProfileSessionManager;
-  readonly #scheduleSave: () => void;
+  readonly #scheduleSave: (urgency?: SaveUrgency) => void;
   readonly #onModelChanged: () => void;
   readonly #onBrowserChanged: (browserId: string) => void;
   readonly #onNotice: BrowserRuntimeOptions['onNotice'];
   readonly #onExternalUrl: BrowserRuntimeOptions['onExternalUrl'];
+  readonly #onContentsDestroyed: (contentsId: number) => void;
   readonly #entries = new Map<string, RuntimeEntry>();
-  readonly #pendingCreates = new Map<string, Promise<RuntimeEntry>>();
   readonly #intentionalCloses = new Set<number>();
+  readonly #syncTimers = new Map<string, NodeJS.Timeout>();
+  readonly #lastSyncAt = new Map<string, number>();
+  readonly #pendingCaptures = new Set<string>();
+  #disposed = false;
 
   constructor(options: BrowserRuntimeOptions) {
     this.#window = options.window;
@@ -64,161 +73,272 @@ export class BrowserRuntime {
     this.#onBrowserChanged = options.onBrowserChanged;
     this.#onNotice = options.onNotice;
     this.#onExternalUrl = options.onExternalUrl;
+    this.#onContentsDestroyed = options.onContentsDestroyed ?? (() => undefined);
   }
 
-  async initialize(): Promise<void> {
+  /** Creates the selected browser first. Its page loads in the background, so startup never waits for the network. */
+  initialize(): void {
     const selectedId = this.#model.selectedBrowserId;
-    if (!selectedId || !this.#model.hasBrowser(selectedId)) return;
-    const browser = this.#model.getBrowser(selectedId);
-    if (!browser.suspended) await this.ensureView(selectedId);
+    if (!selectedId || !this.#model.hasBrowser(selectedId) || this.#model.isSuspended(selectedId)) return;
+    this.#ensureView(selectedId);
   }
 
   getRuntimeStates(): Map<string, BrowserRuntimeState> {
     const states = new Map<string, BrowserRuntimeState>();
-    for (const record of this.#model.listBrowsers()) {
-      const entry = this.#entries.get(record.id);
-      states.set(record.id, entry ? { ...entry.state } : sleepingState(record));
-    }
+    for (const [browserId, entry] of this.#entries) states.set(browserId, { ...entry.state });
     return states;
   }
 
-  async createBrowser(profileId: string): Promise<BrowserRecord> {
-    const browser = this.#model.createBrowser(profileId);
-    await this.ensureView(browser.id);
-    this.#scheduleSave();
-    this.#onModelChanged();
-    return browser;
+  getRuntimeState(browserId: string): BrowserRuntimeState | undefined {
+    const entry = this.#entries.get(browserId);
+    return entry ? { ...entry.state } : undefined;
   }
 
-  async closeBrowser(browserId: string): Promise<void> {
-    await this.destroyView(browserId);
+  createBrowser(profileId: string): void {
+    this.#assertActive();
+    const browser = this.#model.createBrowser(profileId);
+    this.#ensureView(browser.id);
+    this.#applyNativeOrder();
+    this.#scheduleSave();
+    this.#onModelChanged();
+  }
+
+  closeBrowser(browserId: string): void {
+    this.#assertActive();
+    this.#requireBrowser(browserId);
+    this.#destroyView(browserId);
     this.#model.removeBrowser(browserId);
     this.#scheduleSave();
     this.#onModelChanged();
   }
 
-  async assignProfile(browserId: string, profileId: string): Promise<void> {
+  /** Recreates the view with the target profile's Session. The source profile and its storage are never touched. */
+  assignProfile(browserId: string, profileId: string): void {
+    this.#assertActive();
     const current = this.#model.getBrowser(browserId);
     if (current.profileId === profileId) return;
-    await this.captureNavigation(browserId);
-    await this.destroyView(browserId);
-    const updated = this.#model.assignProfile(browserId, profileId);
-    if (!updated.suspended) await this.ensureView(browserId);
+    this.#model.getProfile(profileId);
+    this.#captureNavigation(browserId);
+    this.#destroyView(browserId);
+    this.#model.assignProfile(browserId, profileId);
+    if (!this.#model.isSuspended(browserId)) this.#ensureView(browserId);
+    this.#applyNativeOrder();
     this.#scheduleSave();
     this.#onModelChanged();
   }
 
-  async navigate(browserId: string, input: string): Promise<void> {
+  navigate(browserId: string, input: string): void {
+    this.#assertActive();
     const normalized = normalizeNavigationInput(input);
-    const record = this.#model.getBrowser(browserId);
-    if (record.suspended) this.#model.setSuspended(browserId, false);
-    const entry = await this.ensureView(browserId);
-    await entry.contents.loadURL(normalized);
+    const { entry, woke } = this.#ensureAwakeView(browserId);
+    this.#load(entry, normalized);
+    this.#afterWake(woke);
   }
 
-  async back(browserId: string): Promise<void> {
-    const entry = await this.ensureView(browserId);
-    if (entry.contents.navigationHistory.canGoBack()) entry.contents.navigationHistory.goBack();
+  back(browserId: string): void {
+    this.#assertActive();
+    const { entry, woke } = this.#ensureAwakeView(browserId);
+    if (entry.contents.navigationHistory.canGoBack()) {
+      entry.navigationToken += 1;
+      entry.contents.navigationHistory.goBack();
+    }
+    this.#afterWake(woke);
   }
 
-  async forward(browserId: string): Promise<void> {
-    const entry = await this.ensureView(browserId);
-    if (entry.contents.navigationHistory.canGoForward()) entry.contents.navigationHistory.goForward();
+  forward(browserId: string): void {
+    this.#assertActive();
+    const { entry, woke } = this.#ensureAwakeView(browserId);
+    if (entry.contents.navigationHistory.canGoForward()) {
+      entry.navigationToken += 1;
+      entry.contents.navigationHistory.goForward();
+    }
+    this.#afterWake(woke);
   }
 
-  async reload(browserId: string): Promise<void> {
-    const entry = await this.ensureView(browserId);
+  reload(browserId: string): void {
+    this.#assertActive();
+    const { entry, woke } = this.#ensureAwakeView(browserId);
+    entry.navigationToken += 1;
+    const recovering = entry.state.crashed;
+    entry.state.crashed = false;
     entry.contents.reload();
+    if (woke) this.#afterWake(woke);
+    else if (recovering) this.#onBrowserChanged(browserId);
   }
 
-  async focus(browserId: string): Promise<void> {
-    this.#model.focusBrowser(browserId);
+  focus(browserId: string, options: { focusContents?: boolean } = {}): void {
+    this.#assertActive();
+    this.#requireBrowser(browserId);
+    if (this.#model.focusBrowser(browserId)) {
+      this.#applyNativeOrder();
+      this.#scheduleSave();
+    }
     const entry = this.#entries.get(browserId);
-    if (entry) this.#window.contentView.addChildView(entry.view);
-    this.#scheduleSave();
+    if (options.focusContents && entry?.appliedVisible && !entry.contents.isDestroyed()) entry.contents.focus();
   }
 
-  async sleep(browserId: string): Promise<void> {
-    const record = this.#model.getBrowser(browserId);
-    if (record.suspended) return;
-    await this.captureNavigation(browserId);
-    await this.destroyView(browserId);
+  sleep(browserId: string): void {
+    this.#assertActive();
+    this.#requireBrowser(browserId);
+    if (this.#model.isSuspended(browserId)) return;
+    this.#captureNavigation(browserId);
+    this.#destroyView(browserId);
     this.#model.setSuspended(browserId, true);
     this.#scheduleSave();
     this.#onModelChanged();
   }
 
-  async wake(browserId: string): Promise<void> {
-    this.#model.setSuspended(browserId, false);
-    await this.ensureView(browserId);
+  /** Idempotent: repeated wake requests reuse the view created by the first one. */
+  wake(browserId: string): void {
+    this.#assertActive();
+    const { woke } = this.#ensureAwakeView(browserId);
+    if (woke) this.#scheduleSave();
+    this.#onModelChanged();
+  }
+
+  applyLayout(layout: LayoutBatch): void {
+    if (this.#disposed) return;
+    if (this.#model.commitLayout(layout)) this.#scheduleSave();
+    let createdView = false;
+    for (const item of layout.items) {
+      if (!this.#model.hasBrowser(item.browserId)) continue;
+      const existing = this.#entries.get(item.browserId);
+      const show = item.visible
+        && !this.#model.isSuspended(item.browserId)
+        && !existing?.state.crashed
+        && this.#isSafeContentBounds(item.screenBounds);
+      if (!show) {
+        if (existing?.appliedVisible) {
+          existing.view.setVisible(false);
+          existing.appliedVisible = false;
+        }
+        continue;
+      }
+      if (!existing) createdView = true;
+      const entry = existing ?? this.#ensureView(item.browserId);
+      if (!sameBounds(entry.appliedBounds, item.screenBounds)) {
+        entry.view.setBounds(item.screenBounds);
+        entry.appliedBounds = { ...item.screenBounds };
+      }
+      if (!entry.appliedVisible) {
+        entry.view.setVisible(true);
+        entry.appliedVisible = true;
+      }
+    }
+    if (createdView) this.#applyNativeOrder();
+  }
+
+  captureAllNavigation(): void {
+    for (const browserId of this.#entries.keys()) this.#captureNavigation(browserId);
+  }
+
+  dispose(): void {
+    if (this.#disposed) return;
+    this.captureAllNavigation();
+    this.#disposed = true;
+    for (const timer of this.#syncTimers.values()) clearTimeout(timer);
+    this.#syncTimers.clear();
+    this.#pendingCaptures.clear();
+    for (const browserId of [...this.#entries.keys()]) this.#destroyView(browserId);
+  }
+
+  #assertActive(): void {
+    if (this.#disposed) throw new OmniUserError('conflict', 'OmniBrowser se está cerrando.');
+  }
+
+  #requireBrowser(browserId: string): void {
+    if (!this.#model.hasBrowser(browserId)) throw new BrowserNotFoundError();
+  }
+
+  #ensureAwakeView(browserId: string): { entry: RuntimeEntry; woke: boolean } {
+    this.#requireBrowser(browserId);
+    const woke = this.#model.setSuspended(browserId, false);
+    const hadView = this.#entries.has(browserId);
+    const entry = this.#ensureView(browserId);
+    if (!hadView) this.#applyNativeOrder();
+    return { entry, woke };
+  }
+
+  #afterWake(woke: boolean): void {
+    if (!woke) return;
     this.#scheduleSave();
     this.#onModelChanged();
   }
 
-  async applyLayout(layout: LayoutBatch): Promise<void> {
-    this.#model.commitLayout(layout);
-    await Promise.all(layout.items.map(async (item) => {
-      if (!this.#model.hasBrowser(item.browserId)) return;
-      const record = this.#model.getBrowser(item.browserId);
-      if (!item.visible || record.suspended || !this.isSafeContentBounds(item.screenBounds)) {
-        this.#entries.get(item.browserId)?.view.setVisible(false);
-        return;
-      }
-      const entry = await this.ensureView(item.browserId);
-      entry.view.setBounds(item.screenBounds);
-      entry.view.setVisible(true);
-    }));
-    this.#scheduleSave();
-  }
-
-  async captureAllNavigation(): Promise<void> {
-    await Promise.all([...this.#entries.keys()].map((browserId) => this.captureNavigation(browserId)));
-  }
-
-  async dispose(): Promise<void> {
-    await this.captureAllNavigation();
-    for (const browserId of [...this.#entries.keys()]) await this.destroyView(browserId);
-  }
-
-  private async ensureView(browserId: string): Promise<RuntimeEntry> {
-    const pending = this.#pendingCreates.get(browserId);
-    if (pending) return pending;
+  #ensureView(browserId: string): RuntimeEntry {
     const existing = this.#entries.get(browserId);
-    if (existing) return existing;
-    const creation = this.createView(browserId);
-    this.#pendingCreates.set(browserId, creation);
-    try {
-      return await creation;
-    } finally {
-      this.#pendingCreates.delete(browserId);
-    }
-  }
-
-  private async createView(browserId: string): Promise<RuntimeEntry> {
+    if (existing && !existing.contents.isDestroyed()) return existing;
     const record = this.#model.getBrowser(browserId);
-    const profile = this.#model.getProfile(record.profileId);
-    const profileSession = this.#sessions.get(profile);
+    const profileSession = this.#sessions.get(this.#model.getProfile(record.profileId));
     const view = new WebContentsView({ webPreferences: remoteWebPreferences(profileSession) });
-    const entry: RuntimeEntry = {
-      view,
-      contents: view.webContents,
-      state: { isAwake: true, isLoading: false, canGoBack: false, canGoForward: false, crashed: false }
-    };
-    this.#entries.set(browserId, entry);
-    this.#window.contentView.addChildView(view);
-    view.setVisible(false);
-    this.configureContents(browserId, entry, profileSession);
-    await this.restoreNavigation(browserId, entry);
-    this.updateRuntimeHistoryState(browserId);
+    const entry = this.#register(browserId, record.profileId, view, view.webContents, profileSession);
+    this.#startRestore(entry, record);
     return entry;
   }
 
-  private configureContents(browserId: string, entry: RuntimeEntry, profileSession: Session): void {
+  #register(browserId: string, profileId: string, view: WebContentsView, contents: WebContents, profileSession: Session): RuntimeEntry {
+    const entry: RuntimeEntry = {
+      view,
+      contents,
+      contentsId: contents.id,
+      state: { isAwake: true, isLoading: contents.isLoading(), canGoBack: false, canGoForward: false, crashed: false },
+      navigationToken: 0,
+      appliedBounds: null,
+      appliedVisible: false,
+      disposed: false
+    };
+    this.#entries.set(browserId, entry);
+    view.setVisible(false);
+    this.#window.contentView.addChildView(view);
+    this.#configureContents(browserId, profileId, entry, profileSession);
+    return entry;
+  }
+
+  #startRestore(entry: RuntimeEntry, record: BrowserRecord): void {
+    const history = sanitizeHistory(record.history.entries, record.history.index);
+    const fallbackUrl = isPersistableNavigationUrl(record.url) ? record.url : DEFAULT_BROWSER_URL;
+    if (history.entries.length === 0) {
+      this.#load(entry, fallbackUrl);
+      return;
+    }
+    const token = entry.navigationToken + 1;
+    entry.navigationToken = token;
+    const fallback = () => {
+      if (this.#isSuperseded(entry, token)) return;
+      this.#onNotice('warning', `No se pudo restaurar todo el historial de “${record.title}”; se abrió su última URL.`);
+      this.#load(entry, fallbackUrl);
+    };
+    let restoring: Promise<void>;
+    try {
+      restoring = entry.contents.navigationHistory.restore({ entries: history.entries, index: history.index });
+    } catch {
+      fallback();
+      return;
+    }
+    restoring.catch(() => {
+      if (this.#isSuperseded(entry, token)) return;
+      // A restored stack whose active page failed to load (offline, refused) is kept: did-fail-load reports the failure.
+      if (entry.contents.navigationHistory.length() >= history.entries.length) return;
+      fallback();
+    });
+  }
+
+  #load(entry: RuntimeEntry, url: string): void {
+    entry.navigationToken += 1;
+    // Electron attaches a no-op rejection handler; failures surface through did-fail-load instead of the IPC caller.
+    void entry.contents.loadURL(url);
+  }
+
+  #isSuperseded(entry: RuntimeEntry, token: number): boolean {
+    return entry.disposed || entry.contents.isDestroyed() || entry.navigationToken !== token;
+  }
+
+  #configureContents(browserId: string, profileId: string, entry: RuntimeEntry, profileSession: Session): void {
     const { contents } = entry;
     const guardNavigation = (event: Event, url: string) => {
       if (isAllowedNavigationUrl(url)) return;
       event.preventDefault();
-      if (parseExternalUrl(url)) this.#onExternalUrl(url);
+      if (parseExternalUrl(url)) this.#onExternalUrl(url, entry.contentsId);
       else this.#onNotice('warning', `Navegación bloqueada: ${url.slice(0, 180)}`);
     };
 
@@ -227,151 +347,174 @@ export class BrowserRuntime {
     contents.on('will-attach-webview', (event) => event.preventDefault());
     contents.on('did-start-loading', () => {
       entry.state.isLoading = true;
-      this.#onBrowserChanged(browserId);
+      this.#queueSync(browserId, false);
     });
     contents.on('did-stop-loading', () => {
       entry.state.isLoading = false;
-      void this.syncNavigationFromContents(browserId);
+      this.#queueSync(browserId, true);
     });
-    contents.on('did-navigate', () => void this.syncNavigationFromContents(browserId));
-    contents.on('did-navigate-in-page', () => void this.syncNavigationFromContents(browserId));
-    contents.on('page-title-updated', () => void this.syncNavigationFromContents(browserId));
-    contents.on('render-process-gone', () => {
+    contents.on('did-navigate', () => {
+      entry.state.crashed = false;
+      this.#queueSync(browserId, true);
+    });
+    contents.on('did-navigate-in-page', () => this.#queueSync(browserId, true));
+    contents.on('page-title-updated', () => this.#queueSync(browserId, true));
+    contents.on('did-fail-load', (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
+      if (!isMainFrame || errorCode === NET_ERROR_ABORTED || entry.disposed) return;
+      this.#onNotice('warning', `No se pudo cargar ${displayDomain(validatedUrl)} (${errorDescription}).`);
+    });
+    contents.on('render-process-gone', (_event, details) => {
+      if (details.reason === 'clean-exit' || entry.disposed) return;
       entry.state.crashed = true;
       entry.state.isLoading = false;
-      this.#onNotice('error', 'Una vista del navegador dejó de responder y puede reactivarse con Recargar.');
+      if (entry.appliedVisible) {
+        entry.view.setVisible(false);
+        entry.appliedVisible = false;
+      }
+      this.#onNotice('error', 'Una vista del navegador dejó de responder. Usa Recargar para reactivarla.');
       this.#onBrowserChanged(browserId);
     });
+    // Pressing inside a page selects its card. Only native input is used: 'focus' also fires for programmatic focus,
+    // lazy view creation and window.focus(), which would let a background page steal the selection.
+    contents.on('input-event', (_event, input) => {
+      if (input.type === 'mouseDown' || input.type === 'touchStart' || input.type === 'gestureTapDown') this.#selectFromPage(browserId, entry);
+    });
     contents.once('destroyed', () => {
-      if (this.#entries.get(browserId) === entry) this.#entries.delete(browserId);
-      if (this.#intentionalCloses.delete(contents.id)) return;
-      if (this.#model.hasBrowser(browserId)) {
-        this.#model.removeBrowser(browserId);
-        this.#scheduleSave();
-        this.#onModelChanged();
+      entry.disposed = true;
+      this.#onContentsDestroyed(entry.contentsId);
+      if (this.#entries.get(browserId) === entry) {
+        this.#entries.delete(browserId);
+        this.#cancelSync(browserId);
       }
+      if (this.#intentionalCloses.delete(entry.contentsId) || this.#disposed) return;
+      if (!this.#model.hasBrowser(browserId)) return;
+      // A page-initiated window.close() closes its card, as it would close a browser tab.
+      this.#model.removeBrowser(browserId);
+      this.#scheduleSave();
+      this.#onModelChanged();
     });
     contents.setWindowOpenHandler((details) => {
+      if (this.#disposed) return { action: 'deny' };
       if (!isAllowedNavigationUrl(details.url)) {
-        if (parseExternalUrl(details.url)) this.#onExternalUrl(details.url);
+        if (parseExternalUrl(details.url)) this.#onExternalUrl(details.url, entry.contentsId);
         else this.#onNotice('warning', `Ventana emergente bloqueada: ${details.url.slice(0, 180)}`);
         return { action: 'deny' };
       }
       return {
         action: 'allow',
-        outlivesOpener: false,
+        // Cards are first-class workspace items: closing, suspending or reassigning the opener must not delete them.
+        outlivesOpener: true,
         overrideBrowserWindowOptions: {
           show: false,
           webPreferences: remoteWebPreferences(profileSession)
         },
-        createWindow: (options) => this.adoptPopup(browserId, details.url, options, profileSession)
+        createWindow: (options) => this.#adoptPopup(browserId, profileId, details.url, options, profileSession)
       };
     });
   }
 
-  private adoptPopup(openerBrowserId: string, url: string, options: BrowserWindowConstructorOptions, expectedSession: Session): WebContents {
+  #adoptPopup(openerBrowserId: string, profileId: string, url: string, options: BrowserWindowConstructorOptions, expectedSession: Session): WebContents {
     const providedContents = (options as BrowserWindowConstructorOptions & { webContents?: WebContents }).webContents;
     if (!providedContents) throw new Error('Electron did not provide a WebContents for the popup.');
     if (providedContents.session !== expectedSession) throw new Error('Popup session did not match its opener profile.');
-    const opener = this.#model.getBrowser(openerBrowserId);
-    const browser = this.#model.createBrowser(opener.profileId, {
+    const opener = this.#model.hasBrowser(openerBrowserId) ? this.#model.getBrowser(openerBrowserId) : null;
+    const browser = this.#model.createBrowser(profileId, {
       url,
       title: 'Ventana emergente',
-      worldRect: {
+      worldRect: opener ? {
         x: opener.worldRect.x + 44,
         y: opener.worldRect.y + 44,
         width: opener.worldRect.width,
         height: opener.worldRect.height
-      }
+      } : undefined
     });
     const view = new WebContentsView({ webContents: providedContents });
-    const entry: RuntimeEntry = {
-      view,
-      contents: providedContents,
-      state: { isAwake: true, isLoading: true, canGoBack: false, canGoForward: false, crashed: false }
-    };
-    this.#entries.set(browser.id, entry);
-    this.#window.contentView.addChildView(view);
-    view.setVisible(false);
-    this.configureContents(browser.id, entry, expectedSession);
+    this.#register(browser.id, profileId, view, providedContents, expectedSession);
+    this.#applyNativeOrder();
     this.#scheduleSave();
     setImmediate(() => this.#onModelChanged());
     return providedContents;
   }
 
-  private async restoreNavigation(browserId: string, entry: RuntimeEntry): Promise<void> {
-    const record = this.#model.getBrowser(browserId);
-    const safeEntries = record.history.entries.filter((historyEntry) => isAllowedNavigationUrl(historyEntry.url));
-    if (safeEntries.length > 0) {
-      try {
-        await entry.contents.navigationHistory.restore({
-          entries: safeEntries.map(({ url, title }) => ({ url, title })),
-          index: Math.min(record.history.index, safeEntries.length - 1)
-        });
-        return;
-      } catch {
-        this.#onNotice('warning', `No se pudo restaurar todo el historial de “${record.title}”; se abrió su última URL.`);
-      }
-    }
-    await entry.contents.loadURL(isAllowedNavigationUrl(record.url) ? record.url : 'about:blank');
-  }
-
-  private async captureNavigation(browserId: string): Promise<void> {
-    const entry = this.#entries.get(browserId);
-    if (!entry || entry.contents.isDestroyed() || !this.#model.hasBrowser(browserId)) return;
-    const history = this.sanitizedHistory(entry.contents);
-    const currentUrl = entry.contents.getURL();
-    const safeUrl = isAllowedNavigationUrl(currentUrl) ? currentUrl : this.#model.getBrowser(browserId).url;
-    this.#model.setNavigation(browserId, {
-      url: safeUrl,
-      title: entry.contents.getTitle() || this.#model.getBrowser(browserId).title,
-      history
-    });
-  }
-
-  private async syncNavigationFromContents(browserId: string): Promise<void> {
-    await this.captureNavigation(browserId);
-    this.updateRuntimeHistoryState(browserId);
+  #selectFromPage(browserId: string, entry: RuntimeEntry): void {
+    if (this.#disposed || entry.disposed || !this.#model.hasBrowser(browserId)) return;
+    if (!this.#model.focusBrowser(browserId)) return;
+    this.#applyNativeOrder();
     this.#scheduleSave();
-    this.#onBrowserChanged(browserId);
+    this.#onModelChanged();
   }
 
-  private sanitizedHistory(contents: WebContents): NavigationHistoryRecord {
-    const activeIndex = contents.navigationHistory.getActiveIndex();
-    const entries = contents.navigationHistory.getAllEntries();
-    const sanitized: NavigationHistoryRecord['entries'] = [];
-    let sanitizedIndex = 0;
-    entries.forEach((entry, index) => {
-      if (!isAllowedNavigationUrl(entry.url)) return;
-      sanitized.push({ url: entry.url, title: entry.title.slice(0, 512) });
-      if (index <= activeIndex) sanitizedIndex = sanitized.length - 1;
-    });
-    const firstRetainedIndex = Math.max(0, sanitized.length - 500);
-    const retainedEntries = sanitized.slice(firstRetainedIndex);
-    return {
-      entries: retainedEntries,
-      index: Math.max(0, Math.min(sanitizedIndex - firstRetainedIndex, retainedEntries.length - 1))
-    };
+  #queueSync(browserId: string, capture: boolean): void {
+    if (this.#disposed) return;
+    if (capture) this.#pendingCaptures.add(browserId);
+    if (this.#syncTimers.has(browserId)) return;
+    const elapsed = Date.now() - (this.#lastSyncAt.get(browserId) ?? 0);
+    const delay = Math.max(0, NAVIGATION_SYNC_INTERVAL_MS - elapsed);
+    this.#syncTimers.set(browserId, setTimeout(() => this.#flushSync(browserId), delay));
   }
 
-  private updateRuntimeHistoryState(browserId: string): void {
+  #flushSync(browserId: string): void {
+    this.#syncTimers.delete(browserId);
+    this.#lastSyncAt.set(browserId, Date.now());
+    const capture = this.#pendingCaptures.delete(browserId);
     const entry = this.#entries.get(browserId);
-    if (!entry || entry.contents.isDestroyed()) return;
+    if (this.#disposed || !entry || entry.contents.isDestroyed() || !this.#model.hasBrowser(browserId)) return;
+    if (capture) {
+      const change = this.#captureNavigation(browserId);
+      if (change === 'location') this.#scheduleSave('soon');
+      else if (change === 'title') this.#scheduleSave('idle');
+    }
     entry.state.canGoBack = entry.contents.navigationHistory.canGoBack();
     entry.state.canGoForward = entry.contents.navigationHistory.canGoForward();
     entry.state.isAwake = true;
+    this.#onBrowserChanged(browserId);
   }
 
-  private async destroyView(browserId: string): Promise<void> {
+  #cancelSync(browserId: string): void {
+    const timer = this.#syncTimers.get(browserId);
+    if (timer) clearTimeout(timer);
+    this.#syncTimers.delete(browserId);
+    this.#pendingCaptures.delete(browserId);
+    this.#lastSyncAt.delete(browserId);
+  }
+
+  #captureNavigation(browserId: string): NavigationChange {
+    const entry = this.#entries.get(browserId);
+    if (!entry || entry.contents.isDestroyed() || !this.#model.hasBrowser(browserId)) return 'none';
+    const history = entry.contents.navigationHistory;
+    return this.#model.setNavigation(browserId, {
+      url: entry.contents.getURL(),
+      title: entry.contents.getTitle(),
+      history: { entries: history.getAllEntries(), index: history.getActiveIndex() }
+    });
+  }
+
+  /** Keeps the native stacking order of live views equal to the workspace z-order. */
+  #applyNativeOrder(): void {
+    if (this.#window.isDestroyed()) return;
+    const desired = [...this.#entries.entries()]
+      .filter(([browserId]) => this.#model.hasBrowser(browserId))
+      .sort(([a], [b]) => this.#model.zIndexOf(a) - this.#model.zIndexOf(b))
+      .map(([, entry]) => entry.view);
+    const managed = new Set<unknown>(desired);
+    const current = this.#window.contentView.children.filter((child) => managed.has(child));
+    if (current.length === desired.length && current.every((view, index) => view === desired[index])) return;
+    for (const view of desired) this.#window.contentView.addChildView(view);
+  }
+
+  #destroyView(browserId: string): void {
     const entry = this.#entries.get(browserId);
     if (!entry) return;
     this.#entries.delete(browserId);
-    this.#intentionalCloses.add(entry.contents.id);
-    try { this.#window.contentView.removeChildView(entry.view); } catch {}
-    if (!entry.contents.isDestroyed()) entry.contents.close({ waitForBeforeUnload: false });
+    this.#cancelSync(browserId);
+    entry.disposed = true;
+    if (!this.#window.isDestroyed()) this.#window.contentView.removeChildView(entry.view);
+    if (entry.contents.isDestroyed()) return;
+    this.#intentionalCloses.add(entry.contentsId);
+    entry.contents.close({ waitForBeforeUnload: false });
   }
 
-  private isSafeContentBounds(bounds: ScreenRect): boolean {
+  #isSafeContentBounds(bounds: ScreenRect): boolean {
     const contentSize = this.#window.getContentSize();
     const width = contentSize[0] ?? 0;
     const height = contentSize[1] ?? 0;

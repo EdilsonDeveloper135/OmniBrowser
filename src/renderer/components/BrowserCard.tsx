@@ -12,6 +12,7 @@ interface BrowserCardProps {
   onClose: () => void;
   onSleep: () => void;
   onWake: () => void;
+  onReload: () => void;
   onAssignProfile: (profileId: string) => void;
   onBeginMove: (event: ReactPointerEvent<HTMLElement>) => void;
   onBeginResize: (direction: ResizeDirection, event: ReactPointerEvent<HTMLElement>) => void;
@@ -19,7 +20,7 @@ interface BrowserCardProps {
 
 export type ResizeDirection = 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'nw';
 
-export function BrowserCard({ browser, profiles, selected, onFocus, onClose, onSleep, onWake, onAssignProfile, onBeginMove, onBeginResize }: BrowserCardProps) {
+export function BrowserCard({ browser, profiles, selected, onFocus, onClose, onSleep, onWake, onReload, onAssignProfile, onBeginMove, onBeginResize }: BrowserCardProps) {
   const profileIndex = profiles.findIndex((profile) => profile.id === browser.profileId);
   const profile = profiles[profileIndex];
   if (!profile) return null;
@@ -60,6 +61,7 @@ export function BrowserCard({ browser, profiles, selected, onFocus, onClose, onS
           <strong>{browser.suspended ? 'Navegador en reposo' : browser.runtime.crashed ? 'La vista dejó de responder' : browser.title || 'Nueva página'}</strong>
           <span>{displayDomain(browser.url)}</span>
           {browser.suspended ? <button onClick={onWake} type="button">Activar navegador</button> : null}
+          {!browser.suspended && browser.runtime.crashed ? <button onClick={onReload} type="button">Recargar</button> : null}
         </div>
       </div>
       {(['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw'] as ResizeDirection[]).map((direction) => (

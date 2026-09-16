@@ -7,7 +7,7 @@ interface ProfileRailProps {
   profiles: ProfileRecord[];
   activeProfileId: string | null;
   onSelect: (profileId: string) => void;
-  onCreate: (name: string, kind: ProfileRecord['kind']) => Promise<void>;
+  onCreate: (name: string, kind: ProfileRecord['kind']) => Promise<boolean>;
 }
 
 export function ProfileRail({ profiles, activeProfileId, onSelect, onCreate }: ProfileRailProps) {
@@ -20,7 +20,8 @@ export function ProfileRail({ profiles, activeProfileId, onSelect, onCreate }: P
     if (!name.trim() || busy) return;
     setBusy(true);
     try {
-      await onCreate(name.trim(), kind);
+      // On failure (for example a duplicate name) the panel stays open with the typed name so it can be corrected.
+      if (!await onCreate(name.trim(), kind)) return;
       setName('');
       setKind('persistent');
       setCreating(false);

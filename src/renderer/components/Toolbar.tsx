@@ -11,7 +11,7 @@ interface ToolbarProps {
   onReload: () => Promise<void>;
   onNavigate: (url: string) => Promise<void>;
   onCreateBrowser: () => Promise<void>;
-  onZoom: (nextZoom: number) => void;
+  onZoom: (direction: 1 | -1) => void;
 }
 
 export function Toolbar({ browser, saveStatus, zoom, onBack, onForward, onReload, onNavigate, onCreateBrowser, onZoom }: ToolbarProps) {
@@ -57,9 +57,9 @@ export function Toolbar({ browser, saveStatus, zoom, onBack, onForward, onReload
       </form>
       <button className="create-browser-button" onClick={() => void onCreateBrowser()} type="button"><Plus size={16} /> Abrir navegador</button>
       <div className="zoom-control" aria-label="Zoom del canvas">
-        <button aria-label="Alejar" onClick={() => onZoom(zoom - 0.1)} type="button"><Minus size={15} /></button>
+        <button aria-label="Alejar" onClick={() => onZoom(-1)} type="button"><Minus size={15} /></button>
         <span>{Math.round(zoom * 100)}%</span>
-        <button aria-label="Acercar" onClick={() => onZoom(zoom + 0.1)} type="button"><Plus size={15} /></button>
+        <button aria-label="Acercar" onClick={() => onZoom(1)} type="button"><Plus size={15} /></button>
       </div>
       <div className={`save-indicator is-${saveStatus}`}>
         <span />

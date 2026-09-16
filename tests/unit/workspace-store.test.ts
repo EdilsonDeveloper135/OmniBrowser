@@ -1,9 +1,11 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createInitialWorkspace } from '../../src/main/domain/workspace-model';
-import { WorkspaceStore } from '../../src/main/persistence/workspace-store';
+import { migrateWorkspace, WorkspaceVersionError } from '../../src/main/persistence/workspace-migrations';
+import { MAX_WORKSPACE_BYTES, serializeWorkspace, WorkspaceStore } from '../../src/main/persistence/workspace-store';
+import type { WorkspaceFile } from '../../src/shared/schemas';
 
 const directories: string[] = [];
 
@@ -15,6 +17,24 @@ async function temporaryDirectory(): Promise<string> {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'omnibrowser-store-test-'));
   directories.push(directory);
   return directory;
+}
+
+async function filesIn(directory: string): Promise<Record<string, string>> {
+  const names = await readdir(directory);
+  return Object.fromEntries(await Promise.all(names.map(async (name) => [name, await readFile(path.join(directory, name), 'utf8')] as const)));
+}
+
+function withHistory(workspace: WorkspaceFile, entries: number, urlLength: number): WorkspaceFile {
+  return {
+    ...workspace,
+    browsers: workspace.browsers.map((browser) => ({
+      ...browser,
+      history: {
+        entries: Array.from({ length: entries }, (_, index) => ({ url: `https://example.com/${index}/${'p'.repeat(urlLength)}`, title: `Entry ${index}` })),
+        index: entries - 1
+      }
+    }))
+  };
 }
 
 describe('WorkspaceStore', () => {
@@ -46,5 +66,136 @@ describe('WorkspaceStore', () => {
     const files = await readdir(directory);
     expect(files.some((file) => file.startsWith('workspace.corrupt-'))).toBe(true);
     expect((await store.load(createInitialWorkspace)).recoveredFrom).toBe('primary');
+  });
+
+  it('never overwrites unreadable primary and backup files when it has to start a new workspace', async () => {
+    const directory = await temporaryDirectory();
+    const store = new WorkspaceStore(directory);
+    await writeFile(store.workspacePath, '{"truncated": ', 'utf8');
+    await writeFile(store.backupPath, '[1, 2', 'utf8');
+
+    const loaded = await store.load(createInitialWorkspace);
+    expect(loaded.recoveredFrom).toBe('new');
+    expect(loaded.warning).toMatch(/workspace\.corrupt-/);
+    await store.save(loaded.workspace);
+    await store.save({ ...loaded.workspace, camera: { panX: 1, panY: 1, zoom: 1 } });
+    await store.save({ ...loaded.workspace, camera: { panX: 2, panY: 2, zoom: 1 } });
+
+    const contents = Object.values(await filesIn(directory));
+    expect(contents).toContain('{"truncated": ');
+    expect(contents).toContain('[1, 2');
+  });
+
+  it('preserves a workspace written by a newer schema version instead of discarding it on downgrade', async () => {
+    const directory = await temporaryDirectory();
+    const store = new WorkspaceStore(directory);
+    const future = JSON.stringify({ ...createInitialWorkspace(), schemaVersion: 2, futureField: 'user data from a newer release' });
+    await writeFile(store.workspacePath, future, 'utf8');
+    await writeFile(store.backupPath, future, 'utf8');
+
+    const loaded = await store.load(createInitialWorkspace);
+    expect(loaded.recoveredFrom).toBe('new');
+    expect(loaded.warning).toMatch(/versión más reciente de OmniBrowser \(esquema 2\)/);
+    await store.save(loaded.workspace);
+    await store.save({ ...loaded.workspace, camera: { panX: 3, panY: 3, zoom: 1 } });
+
+    const files = await filesIn(directory);
+    const preserved = Object.entries(files).filter(([name]) => name.includes('.future-v2-'));
+    expect(preserved).toHaveLength(2);
+    expect(preserved.every(([, content]) => content === future)).toBe(true);
+  });
+
+  it('keeps the previous valid snapshot as backup even if the primary on disk was tampered with', async () => {
+    const directory = await temporaryDirectory();
+    const store = new WorkspaceStore(directory);
+    const first = createInitialWorkspace();
+    await store.save(first);
+    await writeFile(store.workspacePath, '{"tampered": true}', 'utf8');
+    await store.save({ ...first, camera: { panX: 9, panY: 9, zoom: 1 } });
+    expect(JSON.parse(await readFile(store.backupPath, 'utf8'))).toEqual(first);
+  });
+
+  it('skips writes whose serialized content did not change', async () => {
+    const directory = await temporaryDirectory();
+    const store = new WorkspaceStore(directory);
+    const workspace = createInitialWorkspace();
+    expect(await store.save(workspace)).toBe('written');
+    const firstWrite = (await lstat(store.workspacePath)).mtimeMs;
+    expect(await store.save(structuredClone(workspace))).toBe('unchanged');
+    expect((await lstat(store.workspacePath)).mtimeMs).toBe(firstWrite);
+  });
+
+  it('creates primary and backup files readable only by the user', async () => {
+    const directory = await temporaryDirectory();
+    const store = new WorkspaceStore(directory);
+    const workspace = createInitialWorkspace();
+    await store.save(workspace);
+    await store.save({ ...workspace, camera: { panX: 4, panY: 4, zoom: 1 } });
+    expect((await lstat(store.workspacePath)).mode & 0o777).toBe(0o600);
+    expect((await lstat(store.backupPath)).mode & 0o777).toBe(0o600);
+  });
+
+  it('does not follow a symlinked workspace and preserves the link instead of reading its target', async () => {
+    const directory = await temporaryDirectory();
+    const store = new WorkspaceStore(directory);
+    const outside = path.join(directory, 'outside.json');
+    const outsideContent = JSON.stringify(createInitialWorkspace());
+    await writeFile(outside, outsideContent, 'utf8');
+    await symlink(outside, store.workspacePath);
+
+    const loaded = await store.load(createInitialWorkspace);
+    expect(loaded.recoveredFrom).toBe('new');
+    expect(loaded.warning).toMatch(/no es un archivo regular/);
+    await store.save(loaded.workspace);
+    expect((await lstat(store.workspacePath)).isSymbolicLink()).toBe(false);
+    expect(await readFile(outside, 'utf8')).toBe(outsideContent);
+  });
+
+  it('removes temporary files left by an interrupted write of another process', async () => {
+    const directory = await temporaryDirectory();
+    const stale = path.join(directory, '.workspace-999999-7c9e6679-7425-40de-944b-e07fc1f90ae7.tmp');
+    const unrelated = path.join(directory, 'notes.tmp');
+    await writeFile(stale, 'partial', 'utf8');
+    await writeFile(unrelated, 'user file', 'utf8');
+    await new WorkspaceStore(directory).load(createInitialWorkspace);
+    const files = await readdir(directory);
+    expect(files).not.toContain(path.basename(stale));
+    expect(files).toContain('notes.tmp');
+  });
+
+  it('trims old history so a saved workspace always fits the size accepted on load', async () => {
+    const huge = withHistory(createInitialWorkspace(), 500, 4000);
+    expect(Buffer.byteLength(JSON.stringify(huge))).toBeGreaterThan(MAX_WORKSPACE_BYTES / 10);
+    const serialized = serializeWorkspace(huge, MAX_WORKSPACE_BYTES / 10);
+    expect(Buffer.byteLength(serialized)).toBeLessThanOrEqual(MAX_WORKSPACE_BYTES / 10);
+    const history = (JSON.parse(serialized) as WorkspaceFile).browsers[0]!.history;
+    expect(history.entries[history.index]?.url).toBe(huge.browsers[0]!.history.entries.at(-1)?.url);
+  });
+});
+
+describe('workspace migrations', () => {
+  it('accepts the current schema unchanged', () => {
+    const workspace = createInitialWorkspace();
+    expect(migrateWorkspace(workspace)).toEqual(workspace);
+  });
+
+  it('rejects future and unknown versions explicitly', () => {
+    expect(() => migrateWorkspace({ schemaVersion: 7 })).toThrow(WorkspaceVersionError);
+    try {
+      migrateWorkspace({ schemaVersion: 7 });
+    } catch (error) {
+      expect((error as WorkspaceVersionError).futureVersion).toBe(7);
+    }
+    expect(() => migrateWorkspace({ schemaVersion: '1' })).toThrow(/versión de esquema/);
+    expect(() => migrateWorkspace({})).toThrow(/versión de esquema/);
+  });
+
+  it('applies registered upgrades in order and stamps each resulting version', () => {
+    const migrated = migrateWorkspace({ schemaVersion: 1, steps: [] }, {
+      1: (workspace) => ({ ...workspace, steps: [...(workspace.steps as string[]), 'v1→v2'] }),
+      2: (workspace) => ({ ...workspace, steps: [...(workspace.steps as string[]), 'v2→v3'] })
+    }, 3);
+    expect(migrated).toEqual({ schemaVersion: 3, steps: ['v1→v2', 'v2→v3'] });
+    expect(() => migrateWorkspace({ schemaVersion: 1 }, {}, 2)).toThrow(/No existe una migración/);
   });
 });

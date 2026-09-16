@@ -6,7 +6,10 @@ import { _electron as electron, expect, test, type ElectronApplication, type Loc
 import electronExecutable from 'electron';
 
 const repositoryRoot = process.cwd();
-const visualArtifactDirectory = path.join(repositoryRoot, 'docs', 'design');
+// Committed visual evidence is only replaced on explicit request, after reviewing the new captures.
+const visualArtifactDirectory = process.env.OMNIBROWSER_UPDATE_VISUAL_EVIDENCE === '1'
+  ? path.join(repositoryRoot, 'docs', 'design')
+  : path.join(repositoryRoot, 'test-results', 'visual');
 const visualArchitecture = process.arch;
 const sharedToken = `e2e-${Date.now()}`;
 

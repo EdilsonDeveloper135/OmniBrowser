@@ -288,6 +288,8 @@ select:focus-visible {
   touch-action: none;
 }
 .canvas-viewport:active { cursor: grabbing; }
+.canvas-viewport:focus { outline: none; }
+.canvas-viewport:focus-visible { box-shadow: inset 0 0 0 2px rgba(22, 133, 255, 0.9); }
 .canvas-grid { position: absolute; inset: 0; pointer-events: none; background-image: radial-gradient(circle, #294052 1px, transparent 1.2px); opacity: 0.72; }
 .canvas-world { position: absolute; inset: 0; transform-origin: 0 0; pointer-events: none; }
 
