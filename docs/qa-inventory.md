@@ -16,5 +16,11 @@ Este inventario vincula cada afirmación visible del MVP con una comprobación f
 | Persistencia | guardar, cerrar y relanzar | perfiles/tarjetas durables vuelven; cookie de sesión no | captura principal y estado restaurado |
 | Ventana mínima | 1040×680 | regiones esenciales dentro del viewport, sin scroll | `implementation-minimum-window-arm64.png` |
 | Vista densa | tres navegadores superpuestos | z-order/foco y minimapa | `implementation-primary-arm64.png` |
+| Alineación nativa | pan por arrastre y rueda, arrastre, resize, teclado | error ≤ 1 DIP entre `WebContentsView` y content slot | `runtime-regressions.spec.ts` |
+| Oclusión | tarjeta superior, minimapa, aviso visible | ninguna superficie visible cubre controles React | `runtime-regressions.spec.ts` |
+| Resiliencia | arranque sin red, crash del renderer, URL remota > 4096, título que cambia sin parar | el shell arranca, la tarjeta se recupera y el workspace se guarda | `runtime-regressions.spec.ts` |
+| Lifecycle | wake/sleep/close repetidos, popups tras suspender/cerrar el opener, quit, segunda instancia | sin vistas duplicadas ni tarjetas perdidas; el proceso termina y conserva el estado | `runtime-regressions.spec.ts` |
+| Seguridad remota | bridge, Node.js, `omnibrowser://`, CORS, permisos, `<webview>`, CSP del shell, bucle de `mailto:` | todo bloqueado o denegado; un solo diálogo externo | `runtime-regressions.spec.ts` |
+| Entradas inválidas | búsqueda implícita, vacío, > 4096, `javascript:`, `file:` | mensajes en español sin excepciones en main | `runtime-regressions.spec.ts` |
 
 Escenarios exploratorios incluidos: URL con esquema bloqueado; reasignación de perfil ida/vuelta; suspensión seguida de reactivación; reinicio con estado temporal y durable mezclados; reducción a ventana mínima después de restaurar.

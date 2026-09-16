@@ -12,7 +12,9 @@ npm ci
 npm start
 ```
 
-Se requiere macOS 13+, Node 24.21.0 y npm 11.19.0. Mantenga versiones directas exactas y actualice `package-lock.json` en el mismo PR que cambie dependencias.
+Se requiere macOS 13+, Node 24.21.0 y npm 11.19.0. Si el Node del sistema es otra versión, active la de `.nvmrc` antes de `npm ci`. En macOS, exporte `SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"`, igual que la CI. Mantenga versiones directas exactas y actualice `package-lock.json` en el mismo PR que cambie dependencias. Un override en `package.json` requiere comprobar la API que usa cada consumidor y documentarlo en `docs/security-audit.md`.
+
+`npm start` usa su propio `userData` (`OmniBrowser Development`) y nunca el de la app instalada.
 
 ## Antes de enviar un PR
 
@@ -36,13 +38,17 @@ No use credenciales reales, cookies exportadas ni cuentas personales en fixtures
 - Mantenga `backgroundThrottling` activado.
 - Use `navigationHistory` en lugar de APIs de navegación deprecadas.
 - No introduzca `BrowserView`, `<webview>` ni `file://` para el shell.
-- Conserve el canvas accesible a 1040×680 y con `prefers-reduced-motion`.
+- Conserve el canvas accesible a 1040×680, con `prefers-reduced-motion` y manejable por teclado.
+- Una superficie Chromium nunca debe cubrir controles React: use `computeCanvasLayout` para cualquier overlay nuevo dentro del canvas.
+- Los errores esperados del IPC son `OmniUserError` con mensaje en español; no lance errores genéricos por entradas de usuario.
 
 ## Tests esperados
 
 - Cambios puros de dominio/geometría/URL: test unitario.
 - Sesión, partición, storage, popup o lifecycle: POC o integración Electron.
-- Flujo visible, restauración o canvas: E2E pequeño y determinista.
+- Flujo visible, restauración o canvas: E2E pequeño y determinista. Los escenarios de lifecycle van en `tests/e2e/runtime-regressions.spec.ts`, con una instancia y un `userData` propios por prueba.
+- Una prueba de regresión debe fallar contra el código anterior a la corrección; compruébelo antes de abrir el PR.
+- Rendimiento: `npm run test:perf` antes y después del cambio en la misma máquina; publique las cifras como observaciones, no como gates.
 - Cambio visual: captura actualizada y entrada en el ledger de fidelidad.
 - Cambio de Electron: los cuatro POC en arm64 y x64, más actualización del ADR.
 

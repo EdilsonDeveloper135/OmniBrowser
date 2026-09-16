@@ -49,7 +49,10 @@ npm run test:e2e           # package de producción + Playwright Electron
 npm run package            # genera OmniBrowser.app
 npm run make               # genera DMG y ZIP con firma ad hoc local
 npm run test:all           # suite completa
+npm run test:perf          # observaciones de memoria, CPU, IPC y guardado (no es un gate)
 ```
+
+`npm run test:e2e:only` usa el bundle de `.webpack/<arch>` generado por `npm run package`; `npm start` lo reemplaza por el bundle de desarrollo, así que conviene volver a empaquetar antes de repetir solo las E2E. Las E2E escriben sus capturas en `test-results/visual/`; para reemplazar las evidencias versionadas de `docs/design/` después de revisarlas, use `OMNIBROWSER_UPDATE_VISUAL_EVIDENCE=1 npm run test:e2e`.
 
 Si el repositorio está dentro de iCloud Drive u otro File Provider que reinyecta atributos Finder en bundles `.app`, use un directorio de salida temporal para que macOS pueda verificar la firma ad hoc:
 
@@ -91,10 +94,11 @@ El contenido remoto nunca recibe el preload del shell, Node.js, `ipcRenderer` ni
 
 ## Datos locales y privacidad
 
-En una app empaquetada, el workspace y los datos de Chromium viven bajo el directorio `userData` de Electron, normalmente `~/Library/Application Support/OmniBrowser` en macOS.
+En una app empaquetada, el workspace y los datos de Chromium viven bajo el directorio `userData` de Electron, normalmente `~/Library/Application Support/OmniBrowser` en macOS. Las ejecuciones de desarrollo (`npm start`) usan `~/Library/Application Support/OmniBrowser Development` para no compartir cookies ni workspace con la app instalada. Solo puede haber una instancia por directorio: abrir otra enfoca la ventana existente.
 
 - `workspace.json` contiene perfiles persistentes, URLs/títulos del historial, cámara, tarjetas y geometría.
 - `workspace.backup.json` conserva el último snapshot válido.
+- Un archivo ilegible, o creado por una versión más reciente, nunca se sobrescribe: se conserva como `workspace.corrupt-*.json` o `workspace.future-v<N>-*.json` y la app avisa con su nombre.
 - Chromium conserva cookies y almacenamiento web dentro de sus particiones persistentes.
 - OmniBrowser no implementa un gestor de contraseñas ni exporta cookies o credenciales.
 
@@ -117,6 +121,7 @@ Las URLs pueden contener información sensible; trate `workspace.json` como dato
 - [Inventario de QA](docs/qa-inventory.md)
 - [Ledger de fidelidad visual](docs/design/fidelity-ledger.md)
 - [Auditoría de dependencias y hardening](docs/security-audit.md)
+- [Auditoría técnica 2026-09: hallazgos, correcciones y mediciones](docs/engineering-audit.md)
 - [Checklist de release](docs/release-checklist.md)
 
 Los números de memoria publicados son observaciones de una máquina concreta, no promesas de consumo ni benchmarks generalizables.

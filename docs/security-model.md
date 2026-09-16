@@ -20,19 +20,26 @@
 
 | Riesgo | Control del MVP |
 |---|---|
-| RCE desde una web | `nodeIntegration: false`, `contextIsolation: true`, `sandbox: true`, sin preload remoto |
-| acceso IPC remoto | bridge solo en shell; validación de `webContents.id`, frame y payload |
+| RCE desde una web | `nodeIntegration: false`, `contextIsolation: true`, `sandbox: true`, sin preload remoto; `<webview>` inerte y guardia global `web-contents-created` que deniega `window.open` y `will-attach-webview` por defecto |
+| acceso IPC remoto | bridge solo en shell; validación de `webContents`, frame principal y payload; resultados serializables sin objetos Electron ni stacks |
 | navegación a código/local | allowlist `https:`, `http:`, `about:blank`; bloqueo de `javascript:`, `data:`, `file:` y esquemas desconocidos |
 | popup privilegiado | handler explícito; mismas preferencias/sesión; adopción como tarjeta |
-| escalada por permisos | permission check/request y device handlers deny-by-default |
+| escalada por permisos | permission check/request y device handlers deny-by-default; se conserva la lista por defecto de clases USB protegidas |
 | exfiltración por descarga | `will-download` cancelado |
-| protocolo externo | allowlist + URL parseada + confirmación nativa |
-| persistencia corrupta/inyectada | límite de tamaño, JSON/Zod, escritura `0600`, temporal+fsync+rename, backup |
+| protocolo externo | allowlist + URL parseada + confirmación nativa; un solo diálogo a la vez y 5 s de enfriamiento por página, para que un bucle de `mailto:` no bloquee el workspace |
+| diálogos JavaScript en bucle | `safeDialogs` permite al usuario impedir más diálogos de una página |
+| persistencia corrupta/inyectada | límite de tamaño aplicado también al escribir, JSON/Zod, migraciones explícitas, `lstat`/`O_NOFOLLOW` sin seguir symlinks, escritura `0600` temporal+fsync+rename de primario y backup, preservación sin sobrescritura de archivos ilegibles o de esquemas futuros |
+| URLs remotas que rompen el guardado | captura saneada: sin esquemas bloqueados, URLs ≤ 4096 caracteres, títulos ≤ 512, índice activo reasignado |
+| dos procesos sobre el mismo perfil | bloqueo de instancia única; `userData` de desarrollo separado del paquete |
 | cruce de perfiles | una partición determinista por UUID; nunca copia manual de storage |
 | manipulación de runtime Electron | fuses: no RunAsNode/NODE_OPTIONS/CLI inspector, ASAR integrity y only-load-ASAR |
 | secretos en historial | solo URL/título; nunca `pageState`; límite de 500 entradas |
 
-La CSP del shell bloquea scripts inline y recursos de red. `style-src-attr 'unsafe-inline'` se mantiene únicamente porque el canvas necesita valores geométricos dinámicos en atributos `style`; no habilita JavaScript inline.
+La CSP del shell bloquea scripts inline, `eval` y recursos de red. En el paquete, `omnibrowser://` la envía además como cabecera con `connect-src 'self'` (sin WebSocket), `frame-ancestors 'none'` y `X-Content-Type-Options: nosniff`; la cabecera se intersecta con la `<meta>`. En desarrollo, la CSP que Forge inyecta por defecto (con `'unsafe-eval'` e inline) se sustituye por la misma política más `ws://localhost:*` para la recarga en vivo. `style-src-attr 'unsafe-inline'` se mantiene únicamente porque el canvas necesita valores geométricos dinámicos en atributos `style`; no habilita JavaScript inline.
+
+Electron sigue mostrando en ejecuciones no empaquetadas el aviso "Insecure Content-Security-Policy". Las políticas servidas (cabecera y `<meta>`) no contienen `unsafe-eval`; las E2E comprueban el texto de ambas y la aplicación efectiva de `connect-src`.
+
+El resolvedor de `omnibrowser://app` solo acepta el host `app`, rechaza escapes malformados, bytes NUL y traversal codificado, y confina las rutas al directorio del renderer empaquetado.
 
 ## Datos en disco
 
