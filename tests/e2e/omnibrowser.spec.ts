@@ -293,7 +293,13 @@ test.describe.serial('OmniBrowser production renderer bundle and native-view run
     await expect.poll(async () => (await snapshot()).browsers.find((browser) => browser.id === workBrowser!.id)?.worldRect.width).toBeGreaterThan(beforeResize.width + 20);
 
     const cameraBeforePan = (await snapshot()).camera;
-    await dragPointer(shell.locator('.canvas-viewport'), { x: 1300, y: 720 }, { x: -50, y: -40 }, 9);
+    const canvas = shell.locator('.canvas-viewport');
+    const canvasBox = await canvas.boundingBox();
+    if (!canvasBox) throw new Error('Canvas has no layout box.');
+    await dragPointer(canvas, {
+      x: canvasBox.x + canvasBox.width / 2,
+      y: canvasBox.y + canvasBox.height / 2
+    }, { x: -50, y: -40 }, 9);
     await expect.poll(async () => (await snapshot()).camera.panX).not.toBe(cameraBeforePan.panX);
 
     for (let index = 0; index < 4; index += 1) await shell.getByRole('button', { name: 'Alejar' }).click();
