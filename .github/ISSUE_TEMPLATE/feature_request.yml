@@ -1,0 +1,29 @@
+name: Feature request
+description: Propón una mejora compatible con el modelo local-first.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problema
+      description: ¿Qué necesidad concreta no resuelve hoy OmniBrowser?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Propuesta
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Impacto en perfiles, privacidad o permisos
+      description: Indica si toca sesiones, IPC, persistencia, navegación o APIs del sistema.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternativas consideradas

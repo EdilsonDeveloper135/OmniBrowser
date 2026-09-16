@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: macOS ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Use pinned Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Select the active macOS SDK
+        run: echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> "$GITHUB_ENV"
+
+      - name: Install exact dependencies
+        run: npm ci
+
+      - name: Verify types, lint and units
+        run: npm run verify
+
+      - name: Run Electron proof-of-concepts
+        run: npm run test:poc
+
+      - name: Build packaged application
+        run: npm run package -- --arch=${{ matrix.arch }}
+
+      - name: Verify the packaged application
+        shell: bash
+        run: |
+          app_path="out/OmniBrowser-darwin-${{ matrix.arch }}/OmniBrowser.app"
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Contents/Info.plist")" = "org.omnibrowser.desktop"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app_path/Contents/Info.plist")" = "13.0"
+          npm exec -- electron-fuses read --app "$app_path" | tee /tmp/omnibrowser-fuses.txt
+          grep -q 'RunAsNode is Disabled' /tmp/omnibrowser-fuses.txt
+          grep -q 'EnableCookieEncryption is Enabled' /tmp/omnibrowser-fuses.txt
+          grep -q 'EnableNodeOptionsEnvironmentVariable is Disabled' /tmp/omnibrowser-fuses.txt
+          grep -q 'EnableNodeCliInspectArguments is Disabled' /tmp/omnibrowser-fuses.txt
+          grep -q 'EnableEmbeddedAsarIntegrityValidation is Enabled' /tmp/omnibrowser-fuses.txt
+          grep -q 'OnlyLoadAppFromAsar is Enabled' /tmp/omnibrowser-fuses.txt
+          grep -q 'GrantFileProtocolExtraPrivileges is Disabled' /tmp/omnibrowser-fuses.txt
+
+      - name: Run Electron end-to-end suite
+        run: npm run test:e2e:only
+
+      - name: Audit runtime dependencies
+        run: npm audit --omit=dev

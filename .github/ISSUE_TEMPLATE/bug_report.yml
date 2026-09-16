@@ -1,0 +1,55 @@
+name: Bug report
+description: Reporta un fallo reproducible del MVP.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: No adjuntes cookies, credenciales, `userData` ni URLs privadas.
+  - type: input
+    id: version
+    attributes:
+      label: Versión o commit
+      placeholder: 0.1.0 / SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: architecture
+    attributes:
+      label: Arquitectura
+      options: [Apple Silicon arm64, Intel x64]
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: Versión de macOS
+      placeholder: macOS 15.6
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Pasos para reproducir
+      description: Usa fixtures o datos sanitizados.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Resultado esperado
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Resultado observado
+    validations:
+      required: true
+  - type: checkboxes
+    id: security
+    attributes:
+      label: Seguridad
+      options:
+        - label: Confirmo que este reporte no contiene un exploit o dato sensible; si lo contiene usaré Security Advisories.
+          required: true

@@ -1,0 +1,130 @@
+# OmniBrowser
+
+OmniBrowser es un workspace de navegación local para macOS: varias vistas Chromium viven dentro de un canvas infinito y cada tarjeta puede moverse, redimensionarse, superponerse, suspenderse o asociarse a un perfil distinto.
+
+La diferencia esencial frente a una cuadrícula de iframes es el modelo de sesión. Dos tarjetas del mismo perfil usan la misma `Session`/partición de Chromium; por ello comparten cookies, `localStorage`, IndexedDB, Cache Storage, caché HTTP y service workers respetando las reglas web normales de origen. Los perfiles distintos permanecen aislados.
+
+![OmniBrowser ejecutando cuatro tarjetas en el canvas](docs/design/implementation-primary-arm64.png)
+
+> Estado: MVP funcional para macOS 13 o posterior. La implementación y los POC se validaron localmente en Apple Silicon con Electron 44.4.1. La matriz de CI ejecuta también el gate x64 en un runner Intel; el artefacto Intel no se ejecutó localmente porque el equipo de desarrollo no tiene Rosetta instalado.
+
+## Qué incluye el MVP
+
+- múltiples navegadores Chromium dentro de un único `BrowserWindow`;
+- perfiles persistentes y perfiles temporales;
+- sesión compartida entre tarjetas del mismo perfil y aislamiento entre perfiles;
+- URL, atrás, adelante y recargar;
+- canvas con pan, zoom de 25–200 %, z-order, arrastre y resize;
+- modo semántico por debajo de 50 % de zoom;
+- guardado atómico de workspace, historial URL/título y geometría;
+- restauración perezosa de vistas después de reiniciar;
+- suspensión manual que destruye el `WebContents` y lo reconstruye con la sesión correcta;
+- popups adoptados como tarjetas del mismo perfil, conservando `window.opener`, `postMessage` y `window.close`;
+- permisos y descargas denegados por defecto en el MVP;
+- DMG y ZIP mediante Electron Forge.
+
+No hay backend, cuenta OmniBrowser, telemetría, sincronización cloud ni auto-update.
+
+## Requisitos de desarrollo
+
+- macOS 13+;
+- Node.js 24.21.0 (`.nvmrc`);
+- npm 11.19.0;
+- Xcode Command Line Tools.
+
+```bash
+nvm use
+npm ci
+npm start
+```
+
+El repositorio fija todas las versiones directas y compromete `package-lock.json`. No se admite Node 26 para el flujo de Forge de este proyecto; use la versión indicada en `.nvmrc`.
+
+## Comandos
+
+```bash
+npm run verify             # TypeScript, ESLint y tests unitarios
+npm run test:poc           # almacenamiento, canvas, popups y recursos
+npm run test:e2e           # package de producción + Playwright Electron
+npm run package            # genera OmniBrowser.app
+npm run make               # genera DMG y ZIP con firma ad hoc local
+npm run test:all           # suite completa
+```
+
+Si el repositorio está dentro de iCloud Drive u otro File Provider que reinyecta atributos Finder en bundles `.app`, use un directorio de salida temporal para que macOS pueda verificar la firma ad hoc:
+
+```bash
+OMNIBROWSER_OUT_DIR="$(mktemp -d /tmp/omnibrowser-out.XXXXXX)" npm run make
+```
+
+Los E2E usan el bundle Webpack de producción con Electron sin fuses porque Playwright necesita el inspector CLI para automatizar la aplicación. El artefacto empaquetado sí lleva los fuses de seguridad y se comprueba por separado.
+
+## Modelo de perfiles
+
+| Perfil | Partición Electron | Disco | Tras reiniciar |
+|---|---|---|---|
+| Persistente | `persist:omnibrowser-profile-<uuid>` | Gestionado por Chromium | Vuelven perfil, tarjetas y almacenamiento durable |
+| Temporal | `omnibrowser-temp-<launch-id>-<uuid>` | En memoria durante el proceso | No vuelve perfil, tarjeta, URL ni historial |
+
+Compartir una partición no elimina las restricciones de origen, dominio, SameSite o top-level site. Por ejemplo, dos vistas del mismo perfil pueden reutilizar la sesión de un sitio, pero `https://a.example` no obtiene acceso arbitrario al almacenamiento DOM de `https://b.example`.
+
+Las cookies sin `expirationDate` son cookies de sesión: se comparten mientras OmniBrowser está abierto, pero no se exportan ni se reconstruyen después de salir. Las cookies persistentes y el resto del almacenamiento durable son responsabilidad de Chromium.
+
+Cambiar una tarjeta de perfil no muta una sesión activa. OmniBrowser pide confirmación, captura URL/historial sanitizado, destruye la vista y crea otra con la `Session` de destino. El perfil de origen queda intacto.
+
+## Arquitectura
+
+```text
+React shell (omnibrowser://app)
+  └─ preload mínimo y tipado
+      └─ IPC validado con Zod
+          └─ proceso principal
+              ├─ WorkspaceModel / WorkspaceStore
+              ├─ ProfileSessionManager
+              ├─ BrowserRuntime
+              ├─ SaveScheduler
+              └─ WebContentsView por tarjeta
+                   └─ Session Chromium por perfil
+```
+
+El contenido remoto nunca recibe el preload del shell, Node.js, `ipcRenderer` ni objetos Electron. React dibuja el chrome y calcula los rectángulos; el proceso principal posiciona los `WebContentsView` nativos. Consulte [la arquitectura detallada](docs/architecture.md), [el ADR de motor y perfiles](docs/adr/0001-engine-and-profile-model.md) y [el modelo de seguridad](docs/security-model.md).
+
+## Datos locales y privacidad
+
+En una app empaquetada, el workspace y los datos de Chromium viven bajo el directorio `userData` de Electron, normalmente `~/Library/Application Support/OmniBrowser` en macOS.
+
+- `workspace.json` contiene perfiles persistentes, URLs/títulos del historial, cámara, tarjetas y geometría.
+- `workspace.backup.json` conserva el último snapshot válido.
+- Chromium conserva cookies y almacenamiento web dentro de sus particiones persistentes.
+- OmniBrowser no implementa un gestor de contraseñas ni exporta cookies o credenciales.
+
+Las URLs pueden contener información sensible; trate `workspace.json` como datos privados del usuario. Un perfil Temporal reduce persistencia de aplicación, pero no pretende ser un modo antiforense frente a un atacante con acceso al equipo.
+
+## Seguridad y límites conocidos
+
+- Solo se navega a `https:`, `http:` y `about:blank`.
+- Los protocolos externos requieren confirmación y una allowlist.
+- Cámara, micrófono, geolocalización, notificaciones, USB, Bluetooth, MIDI, captura de pantalla y permisos equivalentes se deniegan.
+- Las descargas están fuera de alcance y se cancelan.
+- DevTools remotos solo están disponibles en desarrollo.
+- Un sitio puede detectar Electron, bloquear navegadores embebidos o exigir reautenticación. Compartir correctamente la partición no garantiza que un proveedor acepte su flujo OAuth.
+- La prueba manual con Google debe hacerse únicamente con una cuenta de prueba autorizada y nunca forma parte de CI.
+- La firma Developer ID y notarización requieren secretos del mantenedor; los builds locales reciben una firma ad hoc posterior a los fuses y no se presentan como artefactos notarizados. Una release usa `OMNIBROWSER_MAC_SIGN_IDENTITY` con una identidad Developer ID instalada y sigue el checklist de publicación.
+
+## Evidencia del MVP
+
+- [Resultados de los cuatro POC](docs/poc-results/README.md)
+- [Inventario de QA](docs/qa-inventory.md)
+- [Ledger de fidelidad visual](docs/design/fidelity-ledger.md)
+- [Auditoría de dependencias y hardening](docs/security-audit.md)
+- [Checklist de release](docs/release-checklist.md)
+
+Los números de memoria publicados son observaciones de una máquina concreta, no promesas de consumo ni benchmarks generalizables.
+
+## Contribuir
+
+Lea [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md) y el [Código de conducta](CODE_OF_CONDUCT.md). Los cambios que toquen sesiones, navegación, IPC, permisos o persistencia necesitan tests de regresión y una explicación explícita del límite de confianza afectado.
+
+## Licencia
+
+[MIT](LICENSE) © 2026 OmniBrowser contributors.

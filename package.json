@@ -1,0 +1,85 @@
+{
+  "name": "omnibrowser",
+  "version": "0.1.0",
+  "description": "A local-first spatial browser workspace with explicitly shared Chromium profiles.",
+  "main": ".webpack/main",
+  "private": true,
+  "packageManager": "npm@11.19.0",
+  "license": "MIT",
+  "author": "OmniBrowser contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EdilsonDeveloper135/OmniBrowser.git"
+  },
+  "bugs": {
+    "url": "https://github.com/EdilsonDeveloper135/OmniBrowser/issues"
+  },
+  "homepage": "https://github.com/EdilsonDeveloper135/OmniBrowser#readme",
+  "keywords": [
+    "browser",
+    "canvas",
+    "chromium",
+    "electron",
+    "macos",
+    "profiles",
+    "workspace"
+  ],
+  "allowScripts": {
+    "fs-xattr": true,
+    "fsevents": true,
+    "macos-alias": true
+  },
+  "engines": {
+    "node": ">=24.21.0",
+    "npm": ">=11.6.2"
+  },
+  "scripts": {
+    "start": "electron-forge start",
+    "package": "electron-forge package",
+    "make": "electron-forge make",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "npm run test:unit",
+    "test:unit": "vitest run tests/unit",
+    "test:poc": "node pocs/run-all.cjs",
+    "test:poc:storage": "node pocs/run-storage.cjs",
+    "test:poc:canvas": "node pocs/run-electron-poc.cjs canvas",
+    "test:poc:popup": "node pocs/run-electron-poc.cjs popup",
+    "test:poc:resources": "node pocs/run-electron-poc.cjs resources",
+    "test:e2e": "npm run package && npm run test:e2e:only",
+    "test:e2e:only": "playwright test",
+    "test:all": "npm run verify && npm run test:poc && npm run test:e2e",
+    "verify": "npm run typecheck && npm run lint && npm run test:unit"
+  },
+  "dependencies": {
+    "lucide-react": "1.46.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "7.11.2",
+    "@electron-forge/maker-dmg": "7.11.2",
+    "@electron-forge/maker-zip": "7.11.2",
+    "@electron-forge/plugin-fuses": "7.11.2",
+    "@electron-forge/plugin-webpack": "7.11.2",
+    "@electron/fuses": "1.8.0",
+    "@eslint/js": "10.0.1",
+    "@playwright/test": "1.63.0",
+    "@types/node": "22.20.3",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "appdmg": "0.6.6",
+    "css-loader": "7.1.5",
+    "electron": "44.4.1",
+    "eslint": "10.10.0",
+    "globals": "17.12.0",
+    "jsdom": "30.0.1",
+    "mini-css-extract-plugin": "2.10.2",
+    "ts-loader": "9.6.2",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.70.0",
+    "vitest": "5.0.1",
+    "webpack": "5.111.0"
+  }
+}
