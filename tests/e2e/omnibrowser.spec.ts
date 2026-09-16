@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
+import { _electron as electron, expect, test, type ElectronApplication, type Locator, type Page } from '@playwright/test';
 import electronExecutable from 'electron';
 
 const repositoryRoot = process.cwd();
@@ -107,6 +107,36 @@ async function selectedBrowserTitle(): Promise<string> {
 async function dismissNoticeIfPresent(): Promise<void> {
   const close = shell.getByRole('button', { name: 'Cerrar aviso' });
   if (await close.isVisible()) await close.click();
+}
+
+async function dragPointer(
+  target: Locator,
+  start: { x: number; y: number },
+  delta: { x: number; y: number },
+  pointerId: number
+): Promise<void> {
+  const pointer = { pointerId, pointerType: 'mouse', isPrimary: true };
+  await target.dispatchEvent('pointerdown', {
+    ...pointer,
+    button: 0,
+    buttons: 1,
+    clientX: start.x,
+    clientY: start.y
+  });
+  await shell.locator('body').dispatchEvent('pointermove', {
+    ...pointer,
+    button: 0,
+    buttons: 1,
+    clientX: start.x + delta.x,
+    clientY: start.y + delta.y
+  });
+  await shell.locator('body').dispatchEvent('pointerup', {
+    ...pointer,
+    button: 0,
+    buttons: 0,
+    clientX: start.x + delta.x,
+    clientY: start.y + delta.y
+  });
 }
 
 test.describe.serial('OmniBrowser production renderer bundle and native-view runtime', () => {
@@ -248,12 +278,10 @@ test.describe.serial('OmniBrowser production renderer bundle and native-view run
     await expect(shell.getByText(/No se pudo restaurar todo el historial/)).toHaveCount(0);
 
     const beforeMove = (await snapshot()).browsers.find((browser) => browser.id === workBrowser!.id)!.worldRect;
-    const headerBox = await selectedCard.locator('.browser-card-header').boundingBox();
+    const browserHeader = selectedCard.locator('.browser-card-header');
+    const headerBox = await browserHeader.boundingBox();
     if (!headerBox) throw new Error('Browser header has no layout box.');
-    await shell.mouse.move(headerBox.x + 150, headerBox.y + 18);
-    await shell.mouse.down();
-    await shell.mouse.move(headerBox.x + 210, headerBox.y + 58, { steps: 6 });
-    await shell.mouse.up();
+    await dragPointer(browserHeader, { x: headerBox.x + 150, y: headerBox.y + 18 }, { x: 60, y: 40 }, 5);
     await expect.poll(async () => (await snapshot()).browsers.find((browser) => browser.id === workBrowser!.id)?.worldRect.x).toBeGreaterThan(beforeMove.x + 20);
 
     const beforeResize = (await snapshot()).browsers.find((browser) => browser.id === workBrowser!.id)!.worldRect;
@@ -261,35 +289,11 @@ test.describe.serial('OmniBrowser production renderer bundle and native-view run
     const resizeBox = await resizeHandle.boundingBox();
     if (!resizeBox) throw new Error('Resize handle has no layout box.');
     const resizeStart = { x: resizeBox.x + resizeBox.width / 2, y: resizeBox.y + resizeBox.height / 2 };
-    const pointer = { pointerId: 7, pointerType: 'mouse', isPrimary: true };
-    await resizeHandle.dispatchEvent('pointerdown', {
-      ...pointer,
-      button: 0,
-      buttons: 1,
-      clientX: resizeStart.x,
-      clientY: resizeStart.y
-    });
-    await shell.locator('body').dispatchEvent('pointermove', {
-      ...pointer,
-      button: 0,
-      buttons: 1,
-      clientX: resizeStart.x + 60,
-      clientY: resizeStart.y + 45
-    });
-    await shell.locator('body').dispatchEvent('pointerup', {
-      ...pointer,
-      button: 0,
-      buttons: 0,
-      clientX: resizeStart.x + 60,
-      clientY: resizeStart.y + 45
-    });
+    await dragPointer(resizeHandle, resizeStart, { x: 60, y: 45 }, 7);
     await expect.poll(async () => (await snapshot()).browsers.find((browser) => browser.id === workBrowser!.id)?.worldRect.width).toBeGreaterThan(beforeResize.width + 20);
 
     const cameraBeforePan = (await snapshot()).camera;
-    await shell.mouse.move(1300, 720);
-    await shell.mouse.down();
-    await shell.mouse.move(1250, 680, { steps: 5 });
-    await shell.mouse.up();
+    await dragPointer(shell.locator('.canvas-viewport'), { x: 1300, y: 720 }, { x: -50, y: -40 }, 9);
     await expect.poll(async () => (await snapshot()).camera.panX).not.toBe(cameraBeforePan.panX);
 
     for (let index = 0; index < 4; index += 1) await shell.getByRole('button', { name: 'Alejar' }).click();
