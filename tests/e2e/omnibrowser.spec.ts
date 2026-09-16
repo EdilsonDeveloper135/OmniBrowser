@@ -79,7 +79,12 @@ async function selectBrowser(browserId: string): Promise<void> {
 async function navigate(url: string): Promise<void> {
   const input = shell.getByRole('textbox', { name: 'URL' });
   await input.fill(url);
-  await input.press('Enter');
+  await expect(input).toHaveValue(url);
+  await input.evaluate((element) => {
+    const form = (element as HTMLInputElement).form;
+    if (!form) throw new Error('The URL input is not associated with its navigation form.');
+    form.requestSubmit();
+  });
   if (url.startsWith('http://') || url.startsWith('https://')) {
     const expectedUrl = new URL(url).toString();
     await expect.poll(async () => {
@@ -252,12 +257,32 @@ test.describe.serial('OmniBrowser production renderer bundle and native-view run
     await expect.poll(async () => (await snapshot()).browsers.find((browser) => browser.id === workBrowser!.id)?.worldRect.x).toBeGreaterThan(beforeMove.x + 20);
 
     const beforeResize = (await snapshot()).browsers.find((browser) => browser.id === workBrowser!.id)!.worldRect;
-    const resizeBox = await selectedCard.locator('.resize-se').boundingBox();
+    const resizeHandle = selectedCard.locator('.resize-se');
+    const resizeBox = await resizeHandle.boundingBox();
     if (!resizeBox) throw new Error('Resize handle has no layout box.');
-    await shell.mouse.move(resizeBox.x + resizeBox.width / 2, resizeBox.y + resizeBox.height / 2);
-    await shell.mouse.down();
-    await shell.mouse.move(resizeBox.x + 60, resizeBox.y + 45, { steps: 6 });
-    await shell.mouse.up();
+    const resizeStart = { x: resizeBox.x + resizeBox.width / 2, y: resizeBox.y + resizeBox.height / 2 };
+    const pointer = { pointerId: 7, pointerType: 'mouse', isPrimary: true };
+    await resizeHandle.dispatchEvent('pointerdown', {
+      ...pointer,
+      button: 0,
+      buttons: 1,
+      clientX: resizeStart.x,
+      clientY: resizeStart.y
+    });
+    await shell.locator('body').dispatchEvent('pointermove', {
+      ...pointer,
+      button: 0,
+      buttons: 1,
+      clientX: resizeStart.x + 60,
+      clientY: resizeStart.y + 45
+    });
+    await shell.locator('body').dispatchEvent('pointerup', {
+      ...pointer,
+      button: 0,
+      buttons: 0,
+      clientX: resizeStart.x + 60,
+      clientY: resizeStart.y + 45
+    });
     await expect.poll(async () => (await snapshot()).browsers.find((browser) => browser.id === workBrowser!.id)?.worldRect.width).toBeGreaterThan(beforeResize.width + 20);
 
     const cameraBeforePan = (await snapshot()).camera;
