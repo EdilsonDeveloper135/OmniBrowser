@@ -5,6 +5,8 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import electronExecutable from 'electron';
+import { MAX_ZOOM, MIN_ZOOM, ZOOM_STEP } from '../../src/shared/constants';
+import { setShellWindowSize } from '../support/app-window';
 
 // Machine-specific measurements for before/after comparisons. They are observations, not CI gates.
 
@@ -32,17 +34,18 @@ function html(title: string, script = ''): string {
   return `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title><style>body{margin:0;font:14px system-ui;background:#fff}main{padding:16px}</style></head><body><main><h1>${title}</h1><p>${'Lorem ipsum dolor sit amet. '.repeat(40)}</p></main><script>${script}</script></body></html>`;
 }
 
-function seededWorkspace(count: number, pathname: string) {
+function seededWorkspace(count: number, pathname: string | ((index: number) => string)) {
   const timestamp = new Date().toISOString();
   const profileId = randomUUID();
+  const pathFor = typeof pathname === 'string' ? () => pathname : pathname;
   const browsers = Array.from({ length: count }, (_, index) => ({
     id: randomUUID(),
     profileId,
     worldRect: { x: 20 + (index % 4) * 340, y: 20 + Math.floor(index / 4) * 280, width: 320, height: 260 },
     zIndex: index + 1,
-    url: `${origin}${pathname}?card=${index}`,
+    url: `${origin}${pathFor(index)}?card=${index}`,
     title: `Card ${index}`,
-    history: { entries: [{ url: `${origin}${pathname}?card=${index}`, title: `Card ${index}` }], index: 0 },
+    history: { entries: [{ url: `${origin}${pathFor(index)}?card=${index}`, title: `Card ${index}` }], index: 0 },
     suspended: false,
     createdAt: timestamp,
     updatedAt: timestamp
@@ -73,7 +76,7 @@ async function launch(workspace: unknown): Promise<Launched> {
   await expect.poll(() => app.windows().map((candidate) => candidate.url()), { timeout: 20_000 }).toContain('omnibrowser://app/index.html');
   const shell = app.windows().find((candidate) => candidate.url() === 'omnibrowser://app/index.html')!;
   await shell.waitForLoadState('domcontentloaded');
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setContentSize(1440, 900, false));
+  await setShellWindowSize(app, shell);
   results.electron = await app.evaluate(() => process.versions.electron);
   await instrument(app);
   return { app, shell, userData };
@@ -137,10 +140,12 @@ async function metrics(app: ElectronApplication) {
     const processes = electronApp.getAppMetrics();
     const window = BrowserWindow.getAllWindows()[0];
     const views = window ? window.contentView.children : [];
+    const shellPid = window?.webContents.getOSProcessId();
     return {
       processCount: processes.length,
       totalWorkingSetKiB: processes.reduce((total, metric) => total + metric.memory.workingSetSize, 0),
       totalCpuPercent: Number(processes.reduce((total, metric) => total + metric.cpu.percentCPUUsage, 0).toFixed(2)),
+      shellCpuPercent: Number((processes.find((metric) => metric.pid === shellPid)?.cpu.percentCPUUsage ?? 0).toFixed(2)),
       byType: processes.reduce<Record<string, { count: number; workingSetKiB: number; cpuPercent: number }>>((summary, metric) => {
         const bucket = summary[metric.type] ?? { count: 0, workingSetKiB: 0, cpuPercent: 0 };
         bucket.count += 1;
@@ -211,6 +216,127 @@ async function pagePointerGesture(shell: Page, selector: string, start: { x: num
   }, { selector, start, delta, frames });
 }
 
+/**
+ * Steps the toolbar zoom until the canvas is in the requested mode. The starting zoom is not assumed: locating a card can
+ * raise it to 100 %, and seeded workspaces may start anywhere between the limits.
+ */
+async function zoomUntilMode(shell: Page, mode: 'semantic' | 'interactive') {
+  const button = shell.getByRole('button', { name: mode === 'semantic' ? 'Alejar' : 'Acercar' });
+  const target = shell.locator(mode === 'semantic' ? '.semantic-layer' : '.canvas-world');
+  const zoomLabel = shell.locator('.zoom-control span');
+  for (let step = 0; step <= Math.ceil((MAX_ZOOM - MIN_ZOOM) / ZOOM_STEP); step += 1) {
+    if (await target.count() > 0) break;
+    const before = await zoomLabel.textContent();
+    await button.click();
+    await expect(zoomLabel).not.toHaveText(before ?? '');
+  }
+  await expect(target).toHaveCount(1);
+  return (await zoomLabel.textContent()) ?? '';
+}
+
+interface FrameStats {
+  frames: number;
+  p50Ms: number;
+  p95Ms: number;
+  maxMs: number;
+  longTasks: number;
+  longTaskMs: number;
+}
+
+type FrameRecorderWindow = Window & { __perfFrames: number[]; __perfLongTasks: number[]; __perfRecording: boolean; __perfObserver?: PerformanceObserver };
+
+/** Records animation-frame intervals and long tasks in the shell: the renderer-side cost that process metrics cannot show. */
+async function startFrameRecorder(shell: Page): Promise<void> {
+  await shell.evaluate(() => {
+    const state = window as unknown as FrameRecorderWindow;
+    state.__perfFrames = [];
+    state.__perfLongTasks = [];
+    state.__perfRecording = true;
+    const tick = (time: number) => {
+      state.__perfFrames.push(time);
+      if (state.__perfRecording) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    state.__perfObserver = new PerformanceObserver((list) => { for (const entry of list.getEntries()) state.__perfLongTasks.push(entry.duration); });
+    state.__perfObserver.observe({ type: 'longtask' });
+  });
+}
+
+async function stopFrameRecorder(shell: Page): Promise<FrameStats> {
+  return shell.evaluate(() => {
+    const state = window as unknown as FrameRecorderWindow;
+    state.__perfRecording = false;
+    state.__perfObserver?.disconnect();
+    const intervals = state.__perfFrames.slice(1).map((time, index) => time - state.__perfFrames[index]!).sort((a, b) => a - b);
+    const round = (value: number) => Number(value.toFixed(2));
+    const quantile = (q: number) => round(intervals[Math.min(intervals.length - 1, Math.floor(intervals.length * q))] ?? 0);
+    return {
+      frames: intervals.length,
+      p50Ms: quantile(0.5),
+      p95Ms: quantile(0.95),
+      maxMs: round(intervals.at(-1) ?? 0),
+      longTasks: state.__perfLongTasks.length,
+      longTaskMs: round(state.__perfLongTasks.reduce((total, duration) => total + duration, 0))
+    };
+  });
+}
+
+/**
+ * Main-thread time of the shell renderer while `action` runs, from the DevTools Performance domain: total task time and
+ * how much of it was script, style recalculation and layout.
+ */
+async function shellMainThread<T>(shell: Page, action: () => Promise<T>) {
+  const session = await shell.context().newCDPSession(shell);
+  await session.send('Performance.enable');
+  const read = async () => Object.fromEntries((await session.send('Performance.getMetrics')).metrics.map((metric) => [metric.name, metric.value]));
+  const before = await read();
+  const value = await action();
+  const after = await read();
+  await session.send('Performance.disable');
+  await session.detach();
+  const milliseconds = (name: string) => Number((((after[name] ?? 0) - (before[name] ?? 0)) * 1000).toFixed(1));
+  return {
+    value,
+    mainThread: {
+      taskMs: milliseconds('TaskDuration'),
+      scriptMs: milliseconds('ScriptDuration'),
+      recalcStyleMs: milliseconds('RecalcStyleDuration'),
+      layoutMs: milliseconds('LayoutDuration'),
+      layouts: (after.LayoutCount ?? 0) - (before.LayoutCount ?? 0),
+      styleRecalcs: (after.RecalcStyleCount ?? 0) - (before.RecalcStyleCount ?? 0)
+    }
+  };
+}
+
+/** Time from a search keystroke until the sidebar shows the expected number of rows, measured inside the shell. */
+async function searchRenderMs(shell: Page, value: string, expectedRows: number): Promise<number> {
+  return shell.evaluate(async ({ text, rows }) => {
+    const input = document.querySelector<HTMLInputElement>('input[aria-label="Buscar navegadores abiertos"]');
+    if (!input) throw new Error('Missing sidebar search input.');
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    const started = performance.now();
+    setValue.call(input, text);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    while (document.querySelectorAll('.profile-tree .sidebar-browser-row').length !== rows) {
+      if (performance.now() - started > 10_000) throw new Error(`The sidebar did not show ${rows} rows.`);
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    return Number((performance.now() - started).toFixed(2));
+  }, { text: value, rows: expectedRows });
+}
+
+/** Pans the canvas with wheel events, one per animation frame, as a trackpad does over empty canvas. */
+async function wheelPan(shell: Page, frames: number): Promise<void> {
+  await shell.evaluate(async (count) => {
+    const canvas = document.querySelector('.canvas-viewport');
+    if (!canvas) throw new Error('Missing canvas.');
+    for (let frame = 0; frame < count; frame += 1) {
+      canvas.dispatchEvent(new WheelEvent('wheel', { deltaX: 2, deltaY: 1.5, bubbles: true, cancelable: true }));
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+  }, frames);
+}
+
 async function closeApp(launched: Launched) {
   await launched.app.evaluate(({ app }) => app.exit(0)).catch(() => undefined);
   await launched.app.close().catch(() => undefined);
@@ -250,10 +376,10 @@ test.describe.serial('OmniBrowser performance observations', () => {
       await waitForLoadedViews(launched, count);
       const stages: Record<string, unknown> = {};
       stages.visible = await metrics(launched.app);
-      for (let step = 0; step < 4; step += 1) await launched.shell.getByRole('button', { name: 'Alejar' }).click();
+      const semanticZoom = await zoomUntilMode(launched.shell, 'semantic');
       await launched.shell.waitForTimeout(1500);
-      stages.hiddenSemanticZoom = await metrics(launched.app);
-      for (let step = 0; step < 4; step += 1) await launched.shell.getByRole('button', { name: 'Acercar' }).click();
+      stages.hiddenSemanticZoom = { zoom: semanticZoom, ...(await metrics(launched.app)) };
+      await zoomUntilMode(launched.shell, 'interactive');
       await launched.shell.locator('.canvas-viewport').dispatchEvent('wheel', { deltaX: 40_000, deltaY: 0 });
       await launched.shell.waitForTimeout(1500);
       stages.offViewport = await metrics(launched.app);
@@ -293,25 +419,70 @@ test.describe.serial('OmniBrowser performance observations', () => {
     const searchLatencyMs = performance.now() - searchStarted;
     await search.fill('');
     await expect(launched.shell.locator('.profile-tree-section .sidebar-browser-row')).toHaveCount(500);
+    // In-shell render time without Playwright round trips: narrow to one row, then restore all 500.
+    const searchRender = { narrowMs: await searchRenderMs(launched.shell, 'card 499', 1), restoreMs: await searchRenderMs(launched.shell, '', 500) };
 
     await launched.shell.getByRole('button', { name: 'Snap' }).click();
     const firstCard = launched.shell.locator('.browser-card').first();
     const browserId = await firstCard.getAttribute('data-browser-id');
     const selector = `[data-browser-id="${browserId}"] .browser-card-header`;
     const header = (await launched.shell.locator(selector).boundingBox())!;
-    const snapObservation = await measureWindow(launched, 1500, () => pagePointerGesture(
+    await startFrameRecorder(launched.shell);
+    const snapObservation = await shellMainThread(launched.shell, () => measureWindow(launched, 1500, () => pagePointerGesture(
       launched.shell,
       selector,
       { x: header.x + 120, y: header.y + 14 },
       { x: 16, y: 12 },
       60
-    ));
+    )));
     results['organization-500cards'] = {
       searchLatencyMs: Number(searchLatencyMs.toFixed(2)),
+      searchRender,
       indexedRows: 500,
-      snapDrag: snapObservation,
+      snapDrag: { ...snapObservation.value, mainThread: snapObservation.mainThread, frames: await stopFrameRecorder(launched.shell) },
       alignmentAfterSettle: await nativeAlignment(launched)
     };
+    await closeApp(launched);
+  });
+
+  test('wheel pan and page runtime updates with 500 cards', async () => {
+    test.setTimeout(120_000);
+    // The cards that fit the viewport tick their titles every 100 ms; the other 488 stay without WebContents.
+    const launched = await launch(seededWorkspace(500, (index) => index < 12 ? '/clock' : '/static'));
+    await waitForLoadedViews(launched, 12);
+    await startFrameRecorder(launched.shell);
+    const pan = await shellMainThread(launched.shell, () => measureWindow(launched, 2000, () => wheelPan(launched.shell, 60)));
+    results['wheel-pan-500cards'] = { ...pan.value, mainThread: pan.mainThread, frames: await stopFrameRecorder(launched.shell), alignmentAfterSettle: await nativeAlignment(launched) };
+
+    await startFrameRecorder(launched.shell);
+    const updates = await shellMainThread(launched.shell, () => measureWindow(launched, 5000));
+    results['runtime-updates-500cards-5s'] = { ...updates.value, mainThread: updates.mainThread, frames: await stopFrameRecorder(launched.shell) };
+    await closeApp(launched);
+  });
+
+  test('native views while panning across 500 cards, and after suspending the hidden ones', async () => {
+    test.setTimeout(180_000);
+    // Views are created on demand for cards that become visible and are kept (hidden) afterwards; only suspension frees
+    // their renderer. This observation shows how memory follows the number of cards that have been on screen.
+    const launched = await launch(seededWorkspace(500, '/static'));
+    await waitForLoadedViews(launched, 12);
+    const stages: Record<string, unknown> = { start: await metrics(launched.app) };
+    for (const step of [1, 2]) {
+      // Three rows of 280 world units at 80 % zoom.
+      await launched.shell.locator('.canvas-viewport').dispatchEvent('wheel', { deltaX: 0, deltaY: 672 });
+      await waitForLoadedViews(launched, 12 + step * 12);
+      stages[`afterPan${step}`] = await metrics(launched.app);
+    }
+    const hiddenIds = await launched.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.contentView.children
+      .filter((view) => !view.getVisible())
+      .map((view) => new URL((view as unknown as { webContents: Electron.WebContents }).webContents.getURL()).searchParams.get('card')));
+    const state = await launched.shell.evaluate(() => window.omniBrowser.bootstrap());
+    for (const browser of state.browsers.filter((candidate) => hiddenIds.includes(new URL(candidate.url).searchParams.get('card')))) {
+      await launched.shell.evaluate((id) => window.omniBrowser.browsers.sleep(id), browser.id);
+    }
+    await launched.shell.waitForTimeout(2000);
+    stages.afterSuspendingHidden = { suspended: hiddenIds.length, ...(await metrics(launched.app)) };
+    results['views-while-panning-500cards'] = stages;
     await closeApp(launched);
   });
 
