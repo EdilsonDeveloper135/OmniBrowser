@@ -39,7 +39,10 @@ No use credenciales reales, cookies exportadas ni cuentas personales en fixtures
 - Use `navigationHistory` en lugar de APIs de navegación deprecadas.
 - No introduzca `BrowserView`, `<webview>` ni `file://` para el shell.
 - Conserve el canvas accesible a 1040×680, con `prefers-reduced-motion` y manejable por teclado.
-- Una superficie Chromium nunca debe cubrir controles React: use `computeCanvasLayout` para cualquier overlay nuevo dentro del canvas.
+- Una superficie Chromium nunca debe cubrir controles React: use `computeCanvasLayout` para cualquier overlay nuevo dentro del canvas y márquelo con `native-occluder`. Si el overlay se dibuja dentro de `.canvas-world` se registra en coordenadas world y sigue a la cámara; si se añade estado que lo muestre o lo mueva, inclúyalo en las dependencias de la medición de oclusores de `WorkspaceCanvas`.
+- Las tarjetas y las filas del árbol están memoizadas: páseles callbacks estables (`useEventCallback` o el objeto de acciones del canvas) y datos cuya identidad solo cambie cuando cambia su contenido.
+- Los avisos al shell pasan por `ShellNotices`, que los retiene hasta que el shell hace `bootstrap`; no emita eventos `notice` directamente.
+- No publique gestos ni preferencias que dependan de cancelar la rueda dentro de un `WebContentsView` mientras el POC `gesture-interception-gate` pase.
 - Los errores esperados del IPC son `OmniUserError` con mensaje en español; no lance errores genéricos por entradas de usuario.
 
 ## Tests esperados
@@ -48,9 +51,9 @@ No use credenciales reales, cookies exportadas ni cuentas personales en fixtures
 - Sesión, partición, storage, popup o lifecycle: POC o integración Electron.
 - Flujo visible, restauración o canvas: E2E pequeño y determinista. Los escenarios de lifecycle van en `tests/e2e/runtime-regressions.spec.ts`, con una instancia y un `userData` propios por prueba.
 - Una prueba de regresión debe fallar contra el código anterior a la corrección; compruébelo antes de abrir el PR.
-- Rendimiento: `npm run test:perf` antes y después del cambio en la misma máquina; publique las cifras como observaciones, no como gates.
-- Cambio visual: captura actualizada y entrada en el ledger de fidelidad.
-- Cambio de Electron: los cuatro POC en arm64 y x64, más actualización del ADR.
+- Rendimiento: `npm run test:perf` antes y después del cambio en la misma máquina, repetido al menos dos veces, y `npm run bench` si toca derivaciones puras; publique las cifras como observaciones, no como gates. En Apple Silicon el tiempo de pared de layout depende de si el hilo corre en núcleos de rendimiento o de eficiencia: compare también script y tarea total antes de atribuir una regresión.
+- Cambio visual: captura actualizada y entrada en el ledger de fidelidad. `OMNIBROWSER_UPDATE_VISUAL_EVIDENCE=1` reemplaza las evidencias versionadas; la del POC de canvas exige una captura compuesta, que en macOS necesita permiso de grabación de pantalla para la terminal (`OMNIBROWSER_REQUIRE_COMPOSITE_CAPTURE=1` convierte su ausencia en error, como en CI).
+- Cambio de Electron: los cinco POC en arm64 y x64, más actualización del ADR. Si falla `gesture-interception-gate`, revise la compuerta de gestos de `docs/architecture.md` antes de tratarlo como regresión.
 
 ## Pull requests
 

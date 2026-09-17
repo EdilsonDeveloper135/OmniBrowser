@@ -2,6 +2,8 @@
 
 Fecha: 2026-09-16. Alcance: `main` en `fff27f8`, Electron 44.4.1, macOS 27.0 (26A428), Apple M4 Pro arm64. Este documento registra el baseline previo a cualquier cambio, los hallazgos priorizados con su evidencia y el estado de cada corrección. Las cifras de rendimiento son observaciones de esta máquina, no benchmarks universales.
 
+> Nota posterior (2026-09-17): la [pasada de hardening tras el canvas espacial](hardening-2026-09.md) corrige dos excepciones de la sección de dependencias: `webpack-dev-server` 5.2.6 sí corrige sus 6 GHSA y se fija por override, y `extract-zip` se sustituye por `@electron-internal/extract-zip`. La agrupación de avisos (F-38) tiene ahora pruebas unitarias. Este documento se conserva como registro de su fecha.
+
 ## 1. Baseline previo a los cambios
 
 ### Entorno

@@ -46,15 +46,16 @@ El repositorio fija todas las versiones directas y compromete `package-lock.json
 
 ```bash
 npm run verify             # TypeScript, ESLint y tests unitarios
-npm run test:poc           # almacenamiento, canvas, popups y recursos
+npm run test:poc           # almacenamiento, canvas, compuerta de gestos, popups y recursos
 npm run test:e2e           # package de producción + Playwright Electron
 npm run package            # genera OmniBrowser.app
 npm run make               # genera DMG y ZIP con firma ad hoc local
 npm run test:all           # suite completa
-npm run test:perf          # observaciones de memoria, CPU, IPC y guardado (no es un gate)
+npm run test:perf          # observaciones de memoria, CPU, frames, IPC y guardado (no es un gate)
+npm run bench              # tiempos de las derivaciones puras con 500 browsers (no es un gate)
 ```
 
-`npm run test:e2e:only` usa el bundle de `.webpack/<arch>` generado por `npm run package`; `npm start` lo reemplaza por el bundle de desarrollo, así que conviene volver a empaquetar antes de repetir solo las E2E. Las E2E escriben sus capturas en `test-results/visual/`; para reemplazar las evidencias versionadas de `docs/design/` después de revisarlas, use `OMNIBROWSER_UPDATE_VISUAL_EVIDENCE=1 npm run test:e2e`.
+`npm run test:e2e:only` usa el bundle de `.webpack/<arch>` generado por `npm run package`; `npm start` lo reemplaza por el bundle de desarrollo, así que conviene volver a empaquetar antes de repetir solo las E2E. Las E2E escriben sus capturas en `test-results/visual/` y el POC de canvas en `test-results/poc/`; para reemplazar las evidencias versionadas de `docs/design/` o `docs/poc-results/` después de revisarlas, use `OMNIBROWSER_UPDATE_VISUAL_EVIDENCE=1` con `npm run test:e2e` o `npm run test:poc:canvas`. La captura del POC solo incluye las vistas nativas si la terminal tiene permiso de grabación de pantalla; sin él, el POC avisa y no reemplaza la evidencia.
 
 Si el repositorio está dentro de iCloud Drive u otro File Provider que reinyecta atributos Finder en bundles `.app`, use un directorio de salida temporal para que macOS pueda verificar la firma ad hoc:
 
@@ -107,15 +108,15 @@ En una app empaquetada, el workspace y los datos de Chromium viven bajo el direc
 - Chromium conserva cookies y almacenamiento web dentro de sus particiones persistentes.
 - OmniBrowser no implementa un gestor de contraseñas ni exporta cookies o credenciales.
 
-Las URLs pueden contener información sensible; trate `workspace.json` como datos privados del usuario. Un perfil Private evita el log propio y usa una sesión en memoria, pero no pretende ser un modo antiforense frente a un atacante con acceso al equipo. Una descarga que el usuario acepte puede permanecer en disco aunque se haya originado en un perfil Private; OmniBrowser no guarda una ruta ni un historial propio de descargas.
+Las URLs pueden contener información sensible; trate `workspace.json` como datos privados del usuario. Un perfil Private evita el log propio y usa una sesión en memoria, pero no pretende ser un modo antiforense frente a un atacante con acceso al equipo. Una descarga que el usuario acepte puede permanecer en disco aunque se haya originado en un perfil Private; OmniBrowser no guarda una ruta ni un historial propio de descargas. Mientras el diálogo de guardado está abierto, Chromium ya escribe los bytes en un archivo temporal oculto de la carpeta Descargas; se elimina al salir de la app, pero un cierre forzado en ese momento podría dejarlo.
 
 ## Seguridad y límites conocidos
 
 - Solo se navega a `https:`, `http:` y `about:blank`.
 - Los protocolos externos requieren confirmación y una allowlist.
 - Cámara, micrófono, geolocalización, notificaciones, USB, Bluetooth, MIDI, captura de pantalla y permisos equivalentes se deniegan.
-- Sólo un `WebContents` registrado puede iniciar una descarga. Electron muestra el diálogo nativo, OmniBrowser no elige la ruta, no la serializa y cancela descargas activas al destruir su browser o cerrar la aplicación.
-- Los gestos de trackpad que requieren cancelar eventos dentro de un `WebContentsView` —pan sobre un browser inactivo e historial horizontal— permanecen sin exponer hasta completar la matriz física Apple Silicon/Intel sin doble scroll o doble navegación. El canvas conserva rueda en área vacía, minimapa, flechas y Space+drag.
+- Sólo un `WebContents` registrado puede iniciar una descarga. Electron muestra el diálogo nativo, OmniBrowser no elige la ruta, no la serializa y cancela descargas activas —borrando el archivo parcial— al cerrar o reasignar su browser o al salir de la aplicación.
+- Los gestos de trackpad que requieren cancelar eventos dentro de un `WebContentsView` —pan sobre un browser inactivo e historial horizontal— no están disponibles: Electron 44 no permite consumir la rueda antes de que la página se desplace, lo que produciría doble scroll. La rueda sobre un browser desplaza solo su página; el canvas conserva rueda en área vacía, minimapa, flechas y Space+drag. El POC `gesture-interception-gate` vigila esa limitación en cada versión de Electron.
 - DevTools remotos solo están disponibles en desarrollo.
 - Un sitio puede detectar Electron, bloquear navegadores embebidos o exigir reautenticación. Compartir correctamente la partición no garantiza que un proveedor acepte su flujo OAuth.
 - La prueba manual con Google debe hacerse únicamente con una cuenta de prueba autorizada y nunca forma parte de CI.
@@ -123,11 +124,12 @@ Las URLs pueden contener información sensible; trate `workspace.json` como dato
 
 ## Evidencia del MVP
 
-- [Resultados de los cuatro POC](docs/poc-results/README.md)
-- [Inventario de QA](docs/qa-inventory.md)
+- [Resultados de los cinco POC](docs/poc-results/README.md)
+- [Inventario de QA y compuertas manuales](docs/qa-inventory.md)
 - [Ledger de fidelidad visual](docs/design/fidelity-ledger.md)
 - [Auditoría de dependencias y hardening](docs/security-audit.md)
 - [Auditoría técnica 2026-09: hallazgos, correcciones y mediciones](docs/engineering-audit.md)
+- [Hardening posterior al canvas espacial: dependencias, gestos, descargas y rendimiento](docs/hardening-2026-09.md)
 - [Checklist de release](docs/release-checklist.md)
 
 Los números de memoria publicados son observaciones de una máquina concreta, no promesas de consumo ni benchmarks generalizables.
