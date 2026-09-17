@@ -2,6 +2,7 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, readdir, rename, unlink, type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { WORKSPACE_SCHEMA_VERSION } from '../../shared/constants';
 import { workspaceFileSchema, type WorkspaceFile } from '../../shared/schemas';
 import { sanitizeHistory } from '../domain/navigation-history';
 import { migrateWorkspace, WorkspaceVersionError } from './workspace-migrations';
@@ -21,7 +22,7 @@ export type WorkspaceSaveResult = 'written' | 'unchanged';
 
 type Candidate =
   | { status: 'missing' }
-  | { status: 'valid'; workspace: WorkspaceFile; source: string }
+  | { status: 'valid'; workspace: WorkspaceFile; source: string; sourceVersion: number }
   | { status: 'invalid'; reason: string; futureVersion: number | null };
 
 interface PendingPreservation {
@@ -66,8 +67,12 @@ async function readCandidate(filePath: string): Promise<Candidate> {
     if (Buffer.byteLength(source, 'utf8') > MAX_WORKSPACE_BYTES) {
       return { status: 'invalid', reason: `${name} supera el límite de tamaño.`, futureVersion: null };
     }
-    const workspace = workspaceFileSchema.parse(migrateWorkspace(JSON.parse(source)));
-    return { status: 'valid', workspace, source };
+    const raw = JSON.parse(source) as unknown;
+    const sourceVersion = typeof raw === 'object' && raw !== null && 'schemaVersion' in raw && typeof raw.schemaVersion === 'number'
+      ? raw.schemaVersion
+      : WORKSPACE_SCHEMA_VERSION;
+    const workspace = workspaceFileSchema.parse(migrateWorkspace(raw));
+    return { status: 'valid', workspace, source, sourceVersion };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { status: 'missing' };
     const futureVersion = error instanceof WorkspaceVersionError ? error.futureVersion : null;
@@ -113,6 +118,7 @@ export class WorkspaceStore {
   // Content of the last valid primary known to be on disk; it becomes the backup on the next write.
   #lastValidPrimary: string | null = null;
   #backupContent: string | null = null;
+  #legacyBackup: { content: string; version: number } | null = null;
 
   constructor(directory: string) {
     this.directory = directory;
@@ -124,10 +130,12 @@ export class WorkspaceStore {
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
     await this.#removeStaleTemporaryFiles();
     this.#pendingPreservations = [];
+    this.#legacyBackup = null;
 
     const primary = await readCandidate(this.workspacePath);
     if (primary.status === 'valid') {
       this.#lastValidPrimary = primary.source;
+      if (primary.sourceVersion < WORKSPACE_SCHEMA_VERSION) this.#legacyBackup = { content: primary.source, version: primary.sourceVersion };
       return { workspace: primary.workspace, recoveredFrom: 'primary' };
     }
 
@@ -138,6 +146,7 @@ export class WorkspaceStore {
     if (backup.status === 'valid') {
       this.#lastValidPrimary = backup.source;
       this.#backupContent = backup.source;
+      if (backup.sourceVersion < WORKSPACE_SCHEMA_VERSION) this.#legacyBackup = { content: backup.source, version: backup.sourceVersion };
       if (primary.status === 'missing') notes.push('No se encontró workspace.json.');
       notes.push('Se recuperó workspace.backup.json.');
       return { workspace: backup.workspace, recoveredFrom: 'backup', warning: notes.join(' ') };
@@ -153,8 +162,9 @@ export class WorkspaceStore {
 
   async save(workspace: WorkspaceFile): Promise<WorkspaceSaveResult> {
     const serialized = serializeWorkspace(workspace);
-    if (serialized === this.#lastValidPrimary && this.#pendingPreservations.length === 0) return 'unchanged';
+    if (serialized === this.#lastValidPrimary && this.#pendingPreservations.length === 0 && this.#legacyBackup === null) return 'unchanged';
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
+    await this.#writeLegacyBackup();
     await this.#preservePendingFiles();
     if (this.#lastValidPrimary !== null && this.#lastValidPrimary !== this.#backupContent) {
       await writeFileAtomically(this.directory, this.backupPath, this.#lastValidPrimary);
@@ -163,6 +173,19 @@ export class WorkspaceStore {
     await writeFileAtomically(this.directory, this.workspacePath, serialized);
     this.#lastValidPrimary = serialized;
     return 'written';
+  }
+
+  async #writeLegacyBackup(): Promise<void> {
+    const pending = this.#legacyBackup;
+    if (!pending) return;
+    const target = path.join(this.directory, `workspace.v${pending.version}-backup.json`);
+    try {
+      await lstat(target);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      await writeFileAtomically(this.directory, target, pending.content);
+    }
+    this.#legacyBackup = null;
   }
 
   #schedulePreservation(source: string, candidate: Extract<Candidate, { status: 'invalid' }>): string {

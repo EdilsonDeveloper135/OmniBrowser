@@ -12,11 +12,43 @@ export class WorkspaceVersionError extends Error {
 
 type WorkspaceMigration = (workspace: Record<string, unknown>) => Record<string, unknown>;
 
+function migrateV1ToV2(workspace: Record<string, unknown>): Record<string, unknown> {
+  const rawProfiles = Array.isArray(workspace.profiles) ? workspace.profiles : [];
+  const profiles = rawProfiles.filter((profile): profile is Record<string, unknown> => isRecord(profile) && profile.kind === 'persistent');
+  const persistentProfileIds = new Set(profiles.map((profile) => profile.id).filter((id): id is string => typeof id === 'string'));
+  const rawBrowsers = Array.isArray(workspace.browsers) ? workspace.browsers : [];
+  const browsers: Record<string, unknown>[] = rawBrowsers
+    .filter((browser): browser is Record<string, unknown> => isRecord(browser) && typeof browser.profileId === 'string' && persistentProfileIds.has(browser.profileId))
+    .map((browser) => ({
+      ...browser,
+      zoneId: null,
+      presentation: 'normal',
+      positionLocked: false,
+      pin: { sidebar: false, viewport: null }
+    }));
+  const browserOrder = browsers.map((browser) => browser['id']).filter((id): id is string => typeof id === 'string');
+  const selectedBrowserId = typeof workspace.selectedBrowserId === 'string' && browserOrder.includes(workspace.selectedBrowserId)
+    ? workspace.selectedBrowserId
+    : null;
+  return {
+    ...workspace,
+    profiles,
+    browsers,
+    zones: [],
+    stacks: [],
+    browserOrder,
+    preferences: { snapEnabled: false, historySwipeEnabled: false },
+    selectedBrowserId
+  };
+}
+
 /**
  * Explicit, ordered upgrades keyed by the schema version they migrate *from*. Every increment of
  * WORKSPACE_SCHEMA_VERSION must add exactly one entry here together with a fixture test of the previous format.
  */
-const MIGRATIONS: Readonly<Record<number, WorkspaceMigration>> = {};
+const MIGRATIONS: Readonly<Record<number, WorkspaceMigration>> = {
+  1: migrateV1ToV2
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

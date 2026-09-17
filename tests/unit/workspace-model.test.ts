@@ -6,30 +6,39 @@ import { workspaceFileSchema } from '../../src/shared/schemas';
 import { raiseToTop } from '../../src/shared/z-order';
 
 describe('WorkspaceModel persistence projection', () => {
-  it('creates the required Personal profile and a non-persisted Temporal profile', () => {
+  it('creates the required Personal profile and a non-persisted Private profile', () => {
     const model = new WorkspaceModel(createInitialWorkspace());
     expect(model.listProfiles().map((profile) => [profile.name, profile.kind])).toEqual([
       ['Personal', 'persistent'],
-      ['Temporal', 'temporary']
+      ['Private', 'private']
     ]);
     expect(model.toPersistentFile().profiles.map((profile) => profile.name)).toEqual(['Personal']);
   });
 
-  it('removes temporary profiles and every associated browser, URL, and history entry from disk state', () => {
+  it('removes private profiles and every associated browser, URL, and history entry from disk state', () => {
     const model = new WorkspaceModel(createInitialWorkspace());
-    const temporary = model.listProfiles().find((profile) => profile.kind === 'temporary');
-    expect(temporary).toBeDefined();
-    const browser = model.createBrowser(temporary!.id, { url: 'https://private.example/path', title: 'Private temporary page' });
+    const privateProfile = model.listProfiles().find((profile) => profile.kind === 'private');
+    expect(privateProfile).toBeDefined();
+    const browser = model.createBrowser(privateProfile!.id, { url: 'https://private.example/path', title: 'Private page' });
     model.setNavigation(browser.id, {
       url: 'https://private.example/path',
-      title: 'Private temporary page',
-      history: { entries: [{ url: 'https://private.example/path', title: 'Private temporary page' }], index: 0 }
+      title: 'Private page',
+      history: { entries: [{ url: 'https://private.example/path', title: 'Private page' }], index: 0 }
     });
+    const second = model.createBrowser(privateProfile!.id, { url: 'https://private.example/second' });
+    const privateZone = model.createZone(privateProfile!.id, 'Secret zone', '#123456', [browser.id, second.id]);
+    const privateStack = model.createStack(privateZone.id, [browser.id, second.id]);
+    model.setSidebarPinned([browser.id], true);
 
-    const serialized = JSON.stringify(model.toPersistentFile());
-    expect(serialized).not.toContain(temporary!.id);
+    const persistent = model.toPersistentFile();
+    const serialized = JSON.stringify(persistent);
+    expect(serialized).not.toContain(privateProfile!.id);
     expect(serialized).not.toContain(browser.id);
+    expect(serialized).not.toContain(privateZone.id);
+    expect(serialized).not.toContain(privateStack.id);
     expect(serialized).not.toContain('private.example');
+    expect(persistent.browserOrder).not.toContain(browser.id);
+    expect(persistent.browserOrder).not.toContain(second.id);
   });
 
   it('keeps persistent profiles and their browsers isolated by profile id', () => {
@@ -66,6 +75,191 @@ describe('WorkspaceModel persistence projection', () => {
 });
 
 describe('WorkspaceModel integrity', () => {
+  it('rejects orphaned zones, incomplete sidebar order and cross-zone stacks at the schema boundary', () => {
+    const workspace = createInitialWorkspace();
+    const browser = workspace.browsers[0]!;
+    const orphaned = structuredClone(workspace);
+    orphaned.browsers[0]!.zoneId = '1c2b7a4e-5d6f-4a8b-9c0d-1e2f3a4b5c6d';
+    expect(workspaceFileSchema.safeParse(orphaned).success).toBe(false);
+
+    const incompleteOrder = structuredClone(workspace);
+    incompleteOrder.browserOrder = [];
+    expect(workspaceFileSchema.safeParse(incompleteOrder).success).toBe(false);
+
+    const timestamp = new Date().toISOString();
+    const zoneId = '2d3c8b5f-6e7a-4b9c-8d0e-2f3a4b5c6d7e';
+    const otherZoneId = '3e4d9c6a-7f8b-4c0d-9e1f-3a4b5c6d7e8f';
+    const secondId = '4f5e0d7b-8a9c-4d1e-8f2a-4b5c6d7e8f90';
+    const crossZone = structuredClone(workspace);
+    crossZone.zones = [
+      { id: zoneId, profileId: browser.profileId, name: 'A', color: '#112233', collapsed: false, createdAt: timestamp, updatedAt: timestamp },
+      { id: otherZoneId, profileId: browser.profileId, name: 'B', color: '#445566', collapsed: false, createdAt: timestamp, updatedAt: timestamp }
+    ];
+    crossZone.browsers[0]!.zoneId = zoneId;
+    crossZone.browsers.push({ ...structuredClone(browser), id: secondId, zoneId: otherZoneId, zIndex: 2 });
+    crossZone.browserOrder.push(secondId);
+    crossZone.stacks = [{ id: '5a6f1e8c-9b0d-4e2f-8a3b-5c6d7e8f901a', zoneId, browserIds: [browser.id, secondId], createdAt: timestamp, updatedAt: timestamp }];
+    expect(workspaceFileSchema.safeParse(crossZone).success).toBe(false);
+  });
+
+  it('prevalidates bulk mutations so a stale id cannot leave partial state', () => {
+    const model = new WorkspaceModel(createInitialWorkspace());
+    const first = model.listBrowsers()[0]!;
+    const missing = '6b7a2f9d-0c1e-4f3a-9b4c-6d7e8f901a2b';
+    expect(() => model.setPositionLocked([first.id, missing], true)).toThrow(BrowserNotFoundError);
+    expect(model.getBrowser(first.id).positionLocked).toBe(false);
+    expect(() => model.duplicateBrowsers([first.id, missing])).toThrow(BrowserNotFoundError);
+    expect(model.listBrowsers()).toHaveLength(1);
+  });
+
+  it('never creates more browsers than a snapshot and native layout batch can represent', () => {
+    const model = new WorkspaceModel(createInitialWorkspace());
+    const profile = model.listProfiles()[0]!;
+    for (let index = 1; index < 500; index += 1) model.createBrowser(profile.id, { suspended: true });
+    expect(model.listBrowsers()).toHaveLength(500);
+    expect(() => model.createBrowser(profile.id)).toThrow(/límite de 500/);
+    expect(() => model.duplicateBrowsers([model.listBrowsers()[0]!.id])).toThrow(/límite de 500/);
+  });
+
+  it('keeps canonical geometry through minimize and rejects locked or viewport-pinned layout commits', () => {
+    const model = new WorkspaceModel(createInitialWorkspace());
+    const browser = model.listBrowsers()[0]!;
+    const movedAndResized = {
+      x: browser.worldRect.x + 18,
+      y: browser.worldRect.y + 22,
+      width: browser.worldRect.width + 140,
+      height: browser.worldRect.height + 90
+    };
+    const item = (worldRect: typeof browser.worldRect) => ({
+      browserId: browser.id,
+      worldRect,
+      screenBounds: { x: 320, y: 140, width: 500, height: 360 },
+      visible: true
+    });
+
+    model.setPresentation([browser.id], 'minimized');
+    expect(model.commitLayout({ items: [item(movedAndResized)] })).toBe(true);
+    expect(model.getBrowser(browser.id).worldRect).toEqual({
+      x: movedAndResized.x,
+      y: movedAndResized.y,
+      width: browser.worldRect.width,
+      height: browser.worldRect.height
+    });
+
+    model.setPresentation([browser.id], 'normal');
+    model.setPositionLocked([browser.id], true);
+    expect(model.commitLayout({ items: [item({ ...movedAndResized, x: movedAndResized.x + 100 })] })).toBe(false);
+    model.setPositionLocked([browser.id], false);
+    model.setViewportPin(browser.id, { x: 0.1, y: 0.1, width: 0.4, height: 0.4 });
+    expect(model.commitLayout({ items: [item({ ...movedAndResized, y: movedAndResized.y + 100 })] })).toBe(false);
+    expect(model.getBrowser(browser.id).worldRect.x).toBe(movedAndResized.x);
+    model.setViewportPin(browser.id, null);
+    expect(model.getBrowser(browser.id).worldRect.x).toBe(movedAndResized.x);
+  });
+
+  it('duplicates session history and zone while resetting visual flags and stack membership', () => {
+    const model = new WorkspaceModel(createInitialWorkspace());
+    const profile = model.listProfiles()[0]!;
+    const source = model.listBrowsers()[0]!;
+    const sibling = model.createBrowser(profile.id);
+    model.setNavigation(source.id, {
+      url: 'https://example.com/current',
+      title: 'Current',
+      history: {
+        entries: [
+          { url: 'https://example.com/start', title: 'Start' },
+          { url: 'https://example.com/current', title: 'Current' }
+        ],
+        index: 1
+      }
+    });
+    const zone = model.createZone(profile.id, 'Research', '#4477aa', [source.id, sibling.id]);
+    const stack = model.createStack(zone.id, [sibling.id, source.id]);
+    model.setPositionLocked([source.id], true);
+    model.setSidebarPinned([source.id], true);
+
+    const [copy] = model.duplicateBrowsers([source.id]);
+    expect(copy).toMatchObject({
+      profileId: source.profileId,
+      zoneId: zone.id,
+      url: 'https://example.com/current',
+      title: 'Current',
+      presentation: 'normal',
+      positionLocked: false,
+      pin: { sidebar: false, viewport: null }
+    });
+    expect(copy!.history).toEqual(model.getBrowser(source.id).history);
+    expect(copy!.worldRect).toEqual({
+      ...model.getBrowser(source.id).worldRect,
+      x: model.getBrowser(source.id).worldRect.x + 32,
+      y: model.getBrowser(source.id).worldRect.y + 24
+    });
+    expect(model.listStacks().find((candidate) => candidate.id === stack.id)?.browserIds).not.toContain(copy!.id);
+  });
+
+  it('maintains zone and stack integrity while selecting, removing and ungrouping members', () => {
+    const model = new WorkspaceModel(createInitialWorkspace());
+    const profile = model.listProfiles()[0]!;
+    const first = model.listBrowsers()[0]!;
+    const second = model.createBrowser(profile.id);
+    const third = model.createBrowser(profile.id);
+    expect(() => model.createZone(profile.id, 'Empty', '#112233', [])).toThrow(/al menos un navegador/);
+    const zone = model.createZone(profile.id, 'Work', '#112233', [first.id, second.id, third.id]);
+    const stack = model.createStack(zone.id, [first.id, second.id]);
+    model.selectStackMember(stack.id, first.id);
+    expect(model.listStacks()[0]?.browserIds.at(-1)).toBe(first.id);
+    model.addStackMember(stack.id, third.id);
+    expect(model.listStacks()[0]?.browserIds.at(-1)).toBe(third.id);
+    expect(model.getBrowser(third.id).worldRect).toEqual(model.getBrowser(first.id).worldRect);
+
+    model.removeBrowser(third.id);
+    expect(model.listStacks()[0]?.browserIds).toEqual([second.id, first.id]);
+    model.unstack(stack.id);
+    expect(model.listStacks()).toHaveLength(0);
+    expect(new Set([model.getBrowser(first.id).worldRect.x, model.getBrowser(second.id).worldRect.x]).size).toBe(2);
+    model.assignZone([first.id, second.id], null);
+    expect(model.listZones()).toHaveLength(0);
+  });
+
+  it('moves across privacy boundaries with only the current URL and no session history', () => {
+    const model = new WorkspaceModel(createInitialWorkspace());
+    const browser = model.listBrowsers()[0]!;
+    const privateProfile = model.listProfiles().find((profile) => profile.kind === 'private')!;
+    model.setNavigation(browser.id, {
+      url: 'https://example.com/current',
+      title: 'Current',
+      history: {
+        entries: [
+          { url: 'https://example.com/one', title: 'One' },
+          { url: 'https://example.com/two', title: 'Two' },
+          { url: 'https://example.com/current', title: 'Current' }
+        ],
+        index: 2
+      }
+    });
+    model.assignProfile(browser.id, privateProfile.id);
+    expect(model.getBrowser(browser.id).history).toEqual({
+      entries: [{ url: 'https://example.com/current', title: 'Current' }],
+      index: 0
+    });
+    expect(JSON.stringify(model.toPersistentFile())).not.toContain('example.com/current');
+  });
+
+  it('validates sidebar order independently of z-order and persists workspace preferences', () => {
+    const model = new WorkspaceModel(createInitialWorkspace());
+    const profile = model.listProfiles()[0]!;
+    const first = model.listBrowsers()[0]!;
+    const second = model.createBrowser(profile.id);
+    const beforeZ = model.listBrowsers().map(({ id, zIndex }) => [id, zIndex]);
+    model.setBrowserOrder([second.id, first.id]);
+    model.setPreferences({ snapEnabled: true });
+    const snapshot = model.toSnapshot(new Map(), 'saved');
+    expect(snapshot.browserOrder).toEqual([second.id, first.id]);
+    expect(snapshot.preferences).toEqual({ snapEnabled: true, historySwipeEnabled: false });
+    expect(model.listBrowsers().map(({ id, zIndex }) => [id, zIndex])).toEqual(beforeZ);
+    expect(() => model.setBrowserOrder([first.id, first.id])).toThrow(/exactamente una vez/);
+  });
+
   it('keeps the workspace serializable after Chromium reports URLs longer than the persisted limit', () => {
     const model = new WorkspaceModel(createInitialWorkspace());
     const browser = model.listBrowsers()[0]!;
@@ -134,12 +328,12 @@ describe('WorkspaceModel integrity', () => {
     expect(snapshot.browsers[0]?.runtime.canGoBack).toBe(true);
   });
 
-  it('picks a unique temporary profile name when a persistent profile already uses it', () => {
+  it('picks a unique private profile name when a persistent profile already uses it', () => {
     const workspace = createInitialWorkspace();
     const timestamp = new Date().toISOString();
-    workspace.profiles.push({ id: '1c2b7a4e-5d6f-4a8b-9c0d-1e2f3a4b5c6d', name: 'Temporal', kind: 'persistent', createdAt: timestamp, updatedAt: timestamp });
+    workspace.profiles.push({ id: '1c2b7a4e-5d6f-4a8b-9c0d-1e2f3a4b5c6d', name: 'Private', kind: 'persistent', createdAt: timestamp, updatedAt: timestamp });
     const model = new WorkspaceModel(workspace);
-    expect(model.listProfiles().filter((profile) => profile.kind === 'temporary').map((profile) => profile.name)).toEqual(['Temporal 2']);
+    expect(model.listProfiles().filter((profile) => profile.kind === 'private').map((profile) => profile.name)).toEqual(['Private 2']);
   });
 
   it('reports missing browsers and profiles as localized user errors', () => {

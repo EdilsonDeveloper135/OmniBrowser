@@ -4,7 +4,7 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['.webpack/**', 'node_modules/**', 'out/**', 'coverage/**', 'playwright-report/**', 'test-results/**']
+    ignores: ['.webpack/**', 'node_modules/**', 'out/**', 'coverage/**', 'playwright-report/**', 'test-results/**', '**/* 2.ts', '**/* 2.tsx']
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

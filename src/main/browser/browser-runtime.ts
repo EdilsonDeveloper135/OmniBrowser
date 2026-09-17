@@ -13,7 +13,8 @@ import { sanitizeHistory } from '../domain/navigation-history';
 import { BrowserNotFoundError, WorkspaceModel, type NavigationChange } from '../domain/workspace-model';
 import type { SaveUrgency } from '../lifecycle/save-scheduler';
 import { ProfileSessionManager } from '../profiles/profile-session-manager';
-import { remoteWebPreferences } from '../security/security-policy';
+import { registerDownloadWebContents, remoteWebPreferences } from '../security/security-policy';
+import { captureFavicon, clearFaviconCache } from './favicon-cache';
 
 const NET_ERROR_ABORTED = -3;
 // Chromium navigation/title events are coalesced per browser into at most one capture and one shell update per interval.
@@ -28,6 +29,8 @@ interface RuntimeEntry {
   navigationToken: number;
   appliedBounds: ScreenRect | null;
   appliedVisible: boolean;
+  surfaceLayer: 'normal' | 'pinned' | 'immersive';
+  unregisterDownload: () => void;
   disposed: boolean;
 }
 
@@ -40,6 +43,8 @@ interface BrowserRuntimeOptions {
   onBrowserChanged: (browserId: string) => void;
   onNotice: (level: 'info' | 'warning' | 'error', message: string) => void;
   onExternalUrl: (url: string, sourceContentsId: number) => void;
+  onNativeBrowserClick?: (browserId: string, shiftKey: boolean) => void;
+  onNativeBrowserEscape?: (browserId: string) => void;
   onContentsDestroyed?: (contentsId: number) => void;
 }
 
@@ -56,6 +61,8 @@ export class BrowserRuntime {
   readonly #onBrowserChanged: (browserId: string) => void;
   readonly #onNotice: BrowserRuntimeOptions['onNotice'];
   readonly #onExternalUrl: BrowserRuntimeOptions['onExternalUrl'];
+  readonly #onNativeBrowserClick: (browserId: string, shiftKey: boolean) => void;
+  readonly #onNativeBrowserEscape: (browserId: string) => void;
   readonly #onContentsDestroyed: (contentsId: number) => void;
   readonly #entries = new Map<string, RuntimeEntry>();
   readonly #intentionalCloses = new Set<number>();
@@ -73,6 +80,8 @@ export class BrowserRuntime {
     this.#onBrowserChanged = options.onBrowserChanged;
     this.#onNotice = options.onNotice;
     this.#onExternalUrl = options.onExternalUrl;
+    this.#onNativeBrowserClick = options.onNativeBrowserClick ?? (() => undefined);
+    this.#onNativeBrowserEscape = options.onNativeBrowserEscape ?? (() => undefined);
     this.#onContentsDestroyed = options.onContentsDestroyed ?? (() => undefined);
   }
 
@@ -85,13 +94,13 @@ export class BrowserRuntime {
 
   getRuntimeStates(): Map<string, BrowserRuntimeState> {
     const states = new Map<string, BrowserRuntimeState>();
-    for (const [browserId, entry] of this.#entries) states.set(browserId, { ...entry.state });
+    for (const [browserId, entry] of this.#entries) states.set(browserId, structuredClone(entry.state));
     return states;
   }
 
   getRuntimeState(browserId: string): BrowserRuntimeState | undefined {
     const entry = this.#entries.get(browserId);
-    return entry ? { ...entry.state } : undefined;
+    return entry ? structuredClone(entry.state) : undefined;
   }
 
   createBrowser(profileId: string): void {
@@ -108,6 +117,16 @@ export class BrowserRuntime {
     this.#requireBrowser(browserId);
     this.#destroyView(browserId);
     this.#model.removeBrowser(browserId);
+    this.#scheduleSave();
+    this.#onModelChanged();
+  }
+
+  duplicateBrowsers(browserIds: readonly string[]): void {
+    this.#assertActive();
+    for (const browserId of browserIds) this.#captureNavigation(browserId);
+    const copies = this.#model.duplicateBrowsers(browserIds);
+    for (const copy of copies) this.#ensureView(copy.id);
+    this.#applyNativeOrder();
     this.#scheduleSave();
     this.#onModelChanged();
   }
@@ -161,9 +180,20 @@ export class BrowserRuntime {
     entry.navigationToken += 1;
     const recovering = entry.state.crashed;
     entry.state.crashed = false;
+    entry.state.lastError = null;
     entry.contents.reload();
     if (woke) this.#afterWake(woke);
     else if (recovering) this.#onBrowserChanged(browserId);
+  }
+
+  stop(browserId: string): void {
+    this.#assertActive();
+    this.#requireBrowser(browserId);
+    const entry = this.#entries.get(browserId);
+    if (!entry || entry.contents.isDestroyed()) return;
+    entry.contents.stop();
+    entry.state.isLoading = false;
+    this.#onBrowserChanged(browserId);
   }
 
   focus(browserId: string, options: { focusContents?: boolean } = {}): void {
@@ -199,14 +229,15 @@ export class BrowserRuntime {
   applyLayout(layout: LayoutBatch): void {
     if (this.#disposed) return;
     if (this.#model.commitLayout(layout)) this.#scheduleSave();
-    let createdView = false;
+    let orderChanged = false;
     for (const item of layout.items) {
       if (!this.#model.hasBrowser(item.browserId)) continue;
       const existing = this.#entries.get(item.browserId);
+      const surfaceLayer = item.surfaceLayer ?? 'normal';
       const show = item.visible
         && !this.#model.isSuspended(item.browserId)
         && !existing?.state.crashed
-        && this.#isSafeContentBounds(item.screenBounds);
+        && this.#isSafeContentBounds(item.screenBounds, surfaceLayer);
       if (!show) {
         if (existing?.appliedVisible) {
           existing.view.setVisible(false);
@@ -214,8 +245,12 @@ export class BrowserRuntime {
         }
         continue;
       }
-      if (!existing) createdView = true;
+      if (!existing) orderChanged = true;
       const entry = existing ?? this.#ensureView(item.browserId);
+      if (entry.surfaceLayer !== surfaceLayer) {
+        entry.surfaceLayer = surfaceLayer;
+        orderChanged = true;
+      }
       if (!sameBounds(entry.appliedBounds, item.screenBounds)) {
         entry.view.setBounds(item.screenBounds);
         entry.appliedBounds = { ...item.screenBounds };
@@ -225,7 +260,7 @@ export class BrowserRuntime {
         entry.appliedVisible = true;
       }
     }
-    if (createdView) this.#applyNativeOrder();
+    if (orderChanged) this.#applyNativeOrder();
   }
 
   captureAllNavigation(): void {
@@ -240,6 +275,7 @@ export class BrowserRuntime {
     this.#syncTimers.clear();
     this.#pendingCaptures.clear();
     for (const browserId of [...this.#entries.keys()]) this.#destroyView(browserId);
+    clearFaviconCache();
   }
 
   #assertActive(): void {
@@ -281,15 +317,33 @@ export class BrowserRuntime {
       view,
       contents,
       contentsId: contents.id,
-      state: { isAwake: true, isLoading: contents.isLoading(), canGoBack: false, canGoForward: false, crashed: false },
+      state: {
+        isAwake: true,
+        isLoading: contents.isLoading(),
+        canGoBack: false,
+        canGoForward: false,
+        crashed: false,
+        isAudible: false,
+        faviconKey: null,
+        download: { activeCount: 0, receivedBytes: 0, totalBytes: null, status: 'idle' },
+        lastError: null
+      },
       navigationToken: 0,
       appliedBounds: null,
       appliedVisible: false,
+      surfaceLayer: 'normal',
+      unregisterDownload: () => undefined,
       disposed: false
     };
     this.#entries.set(browserId, entry);
     view.setVisible(false);
     this.#window.contentView.addChildView(view);
+    entry.unregisterDownload = registerDownloadWebContents(profileSession, contents.id, (download, failed) => {
+      if (entry.disposed) return;
+      entry.state.download = download;
+      entry.state.lastError = failed ? 'download' : entry.state.lastError === 'download' ? null : entry.state.lastError;
+      this.#onBrowserChanged(browserId);
+    });
     this.#configureContents(browserId, profileId, entry, profileSession);
     return entry;
   }
@@ -303,9 +357,12 @@ export class BrowserRuntime {
     }
     const token = entry.navigationToken + 1;
     entry.navigationToken = token;
+    const isPrivate = this.#model.getProfile(record.profileId).kind === 'private';
     const fallback = () => {
       if (this.#isSuperseded(entry, token)) return;
-      this.#onNotice('warning', `No se pudo restaurar todo el historial de “${record.title}”; se abrió su última URL.`);
+      this.#onNotice('warning', isPrivate
+        ? 'No se pudo restaurar todo el historial de un browser Private; se abrió su última URL.'
+        : `No se pudo restaurar todo el historial de “${record.title}”; se abrió su última URL.`);
       this.#load(entry, fallbackUrl);
     };
     let restoring: Promise<void>;
@@ -335,11 +392,12 @@ export class BrowserRuntime {
 
   #configureContents(browserId: string, profileId: string, entry: RuntimeEntry, profileSession: Session): void {
     const { contents } = entry;
+    const isPrivate = this.#model.getProfile(profileId).kind === 'private';
     const guardNavigation = (event: Event, url: string) => {
       if (isAllowedNavigationUrl(url)) return;
       event.preventDefault();
       if (parseExternalUrl(url)) this.#onExternalUrl(url, entry.contentsId);
-      else this.#onNotice('warning', `Navegación bloqueada: ${url.slice(0, 180)}`);
+      else this.#onNotice('warning', isPrivate ? 'Navegación bloqueada en un browser Private.' : `Navegación bloqueada: ${url.slice(0, 180)}`);
     };
 
     contents.on('will-navigate', guardNavigation);
@@ -355,18 +413,37 @@ export class BrowserRuntime {
     });
     contents.on('did-navigate', () => {
       entry.state.crashed = false;
+      entry.state.lastError = null;
       this.#queueSync(browserId, true);
     });
     contents.on('did-navigate-in-page', () => this.#queueSync(browserId, true));
     contents.on('page-title-updated', () => this.#queueSync(browserId, true));
+    contents.on('audio-state-changed', (event) => {
+      entry.state.isAudible = event.audible;
+      this.#onBrowserChanged(browserId);
+    });
+    contents.on('page-favicon-updated', (_event, favicons) => {
+      const favicon = favicons.find((value) => value.startsWith('https:') || value.startsWith('http:'));
+      if (!favicon) return;
+      void captureFavicon(profileSession, favicon).then((key) => {
+        if (!key || entry.disposed || this.#entries.get(browserId) !== entry) return;
+        entry.state.faviconKey = key;
+        this.#onBrowserChanged(browserId);
+      });
+    });
     contents.on('did-fail-load', (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
       if (!isMainFrame || errorCode === NET_ERROR_ABORTED || entry.disposed) return;
-      this.#onNotice('warning', `No se pudo cargar ${displayDomain(validatedUrl)} (${errorDescription}).`);
+      entry.state.lastError = 'navigation';
+      this.#onNotice('warning', isPrivate
+        ? 'No se pudo cargar una página en un browser Private.'
+        : `No se pudo cargar ${displayDomain(validatedUrl)} (${errorDescription}).`);
+      this.#onBrowserChanged(browserId);
     });
     contents.on('render-process-gone', (_event, details) => {
       if (details.reason === 'clean-exit' || entry.disposed) return;
       entry.state.crashed = true;
       entry.state.isLoading = false;
+      entry.state.lastError = 'crashed';
       if (entry.appliedVisible) {
         entry.view.setVisible(false);
         entry.appliedVisible = false;
@@ -374,10 +451,18 @@ export class BrowserRuntime {
       this.#onNotice('error', 'Una vista del navegador dejó de responder. Usa Recargar para reactivarla.');
       this.#onBrowserChanged(browserId);
     });
+    contents.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown' || input.key !== 'Escape' || entry.surfaceLayer !== 'immersive') return;
+      event.preventDefault();
+      this.#onNativeBrowserEscape(browserId);
+    });
     // Pressing inside a page selects its card. Only native input is used: 'focus' also fires for programmatic focus,
     // lazy view creation and window.focus(), which would let a background page steal the selection.
     contents.on('input-event', (_event, input) => {
-      if (input.type === 'mouseDown' || input.type === 'touchStart' || input.type === 'gestureTapDown') this.#selectFromPage(browserId, entry);
+      if (input.type === 'mouseDown' || input.type === 'touchStart' || input.type === 'gestureTapDown') {
+        this.#onNativeBrowserClick(browserId, 'modifiers' in input && Boolean(input.modifiers?.includes('shift')));
+        this.#selectFromPage(browserId, entry);
+      }
     });
     contents.once('destroyed', () => {
       entry.disposed = true;
@@ -397,7 +482,7 @@ export class BrowserRuntime {
       if (this.#disposed) return { action: 'deny' };
       if (!isAllowedNavigationUrl(details.url)) {
         if (parseExternalUrl(details.url)) this.#onExternalUrl(details.url, entry.contentsId);
-        else this.#onNotice('warning', `Ventana emergente bloqueada: ${details.url.slice(0, 180)}`);
+        else this.#onNotice('warning', isPrivate ? 'Ventana emergente bloqueada en un browser Private.' : `Ventana emergente bloqueada: ${details.url.slice(0, 180)}`);
         return { action: 'deny' };
       }
       return {
@@ -494,7 +579,10 @@ export class BrowserRuntime {
     if (this.#window.isDestroyed()) return;
     const desired = [...this.#entries.entries()]
       .filter(([browserId]) => this.#model.hasBrowser(browserId))
-      .sort(([a], [b]) => this.#model.zIndexOf(a) - this.#model.zIndexOf(b))
+      .sort(([a, entryA], [b, entryB]) => {
+        const layer = { normal: 0, pinned: 1, immersive: 2 } as const;
+        return layer[entryA.surfaceLayer] - layer[entryB.surfaceLayer] || this.#model.zIndexOf(a) - this.#model.zIndexOf(b);
+      })
       .map(([, entry]) => entry.view);
     const managed = new Set<unknown>(desired);
     const current = this.#window.contentView.children.filter((child) => managed.has(child));
@@ -508,16 +596,20 @@ export class BrowserRuntime {
     this.#entries.delete(browserId);
     this.#cancelSync(browserId);
     entry.disposed = true;
+    entry.unregisterDownload();
     if (!this.#window.isDestroyed()) this.#window.contentView.removeChildView(entry.view);
     if (entry.contents.isDestroyed()) return;
     this.#intentionalCloses.add(entry.contentsId);
     entry.contents.close({ waitForBeforeUnload: false });
   }
 
-  #isSafeContentBounds(bounds: ScreenRect): boolean {
+  #isSafeContentBounds(bounds: ScreenRect, layer: RuntimeEntry['surfaceLayer'] = 'normal'): boolean {
     const contentSize = this.#window.getContentSize();
     const width = contentSize[0] ?? 0;
     const height = contentSize[1] ?? 0;
+    if (layer === 'immersive') {
+      return bounds.x >= 0 && bounds.y >= 0 && bounds.x + bounds.width <= width && bounds.y + bounds.height <= height;
+    }
     return bounds.x >= PROFILE_RAIL_WIDTH
       && bounds.y >= TOOLBAR_HEIGHT
       && bounds.x + bounds.width <= width

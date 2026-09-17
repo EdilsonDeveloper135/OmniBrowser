@@ -52,28 +52,28 @@ app.whenReady().then(async () => {
   const window = new BrowserWindow({ show: false, width: 1000, height: 700, webPreferences: secureWebPreferences(session.defaultSession) });
   const shared = session.fromPartition('persist:omnibrowser-profile-poc-shared');
   const isolated = session.fromPartition('persist:omnibrowser-profile-poc-isolated');
-  const temporary = session.fromPartition('omnibrowser-temp-poc');
+  const privateSession = session.fromPartition('omnibrowser-private-poc');
   const views = [];
 
   try {
     const sharedA = await createView(window, shared, 0); views.push(sharedA);
     const sharedB = await createView(window, shared, 330); views.push(sharedB);
     const isolatedC = await createView(window, isolated, 660); views.push(isolatedC);
-    const temporaryA = await createView(window, temporary, 0); views.push(temporaryA);
-    const temporaryB = await createView(window, temporary, 330); views.push(temporaryB);
+    const privateA = await createView(window, privateSession, 0); views.push(privateA);
+    const privateB = await createView(window, privateSession, 330); views.push(privateB);
 
     let result;
     if (phase === 'seed') {
       const sharedToken = 'shared-profile-token';
-      const temporaryToken = 'temporary-profile-token';
+      const privateToken = 'private-profile-token';
       const sharedWrite = await execute(sharedA, `window.__storagePoc.write(${JSON.stringify(sharedToken)}, '/http-cache/shared')`);
       const sharedRead = await execute(sharedB, 'window.__storagePoc.read()');
       const sharedHttpCacheBody = await execute(sharedB, "window.__storagePoc.fetchHttpCache('/http-cache/shared')");
       const isolatedRead = await execute(isolatedC, 'window.__storagePoc.read()');
       const isolatedHttpCacheBody = await execute(isolatedC, "window.__storagePoc.fetchHttpCache('/http-cache/shared')");
-      const temporaryWrite = await execute(temporaryA, `window.__storagePoc.write(${JSON.stringify(temporaryToken)}, '/http-cache/temporary')`);
-      const temporaryRead = await execute(temporaryB, 'window.__storagePoc.read()');
-      const temporaryHttpCacheBody = await execute(temporaryB, "window.__storagePoc.fetchHttpCache('/http-cache/temporary')");
+      const privateWrite = await execute(privateA, `window.__storagePoc.write(${JSON.stringify(privateToken)}, '/http-cache/private')`);
+      const privateRead = await execute(privateB, 'window.__storagePoc.read()');
+      const privateHttpCacheBody = await execute(privateB, "window.__storagePoc.fetchHttpCache('/http-cache/private')");
       const reassignedBefore = await createView(window, shared, 660); views.push(reassignedBefore);
       const reassignedBeforeRead = await execute(reassignedBefore, 'window.__storagePoc.read()');
       window.contentView.removeChildView(reassignedBefore);
@@ -92,16 +92,16 @@ app.whenReady().then(async () => {
         sharedHttpCacheBody,
         isolatedRead,
         isolatedHttpCacheBody,
-        temporaryWrite,
-        temporaryRead,
-        temporaryHttpCacheBody,
+        privateWrite,
+        privateRead,
+        privateHttpCacheBody,
         reassignedBeforeRead,
         reassignedAfterRead,
         originalProfileAfterReassign,
         storagePaths: {
           shared: shared.storagePath,
           isolated: isolated.storagePath,
-          temporary: temporary.storagePath
+          private: privateSession.storagePath
         }
       };
     } else if (phase === 'verify') {
@@ -111,9 +111,9 @@ app.whenReady().then(async () => {
         sharedReadB: await execute(sharedB, 'window.__storagePoc.read()'),
         sharedHttpCacheBody: await execute(sharedA, "window.__storagePoc.fetchHttpCache('/http-cache/shared')"),
         isolatedRead: await execute(isolatedC, 'window.__storagePoc.read()'),
-        temporaryReadA: await execute(temporaryA, 'window.__storagePoc.read()'),
-        temporaryReadB: await execute(temporaryB, 'window.__storagePoc.read()'),
-        temporaryHttpCacheBody: await execute(temporaryA, "window.__storagePoc.fetchHttpCache('/http-cache/temporary')")
+        privateReadA: await execute(privateA, 'window.__storagePoc.read()'),
+        privateReadB: await execute(privateB, 'window.__storagePoc.read()'),
+        privateHttpCacheBody: await execute(privateA, "window.__storagePoc.fetchHttpCache('/http-cache/private')")
       };
     } else {
       throw new Error(`Unknown storage POC phase: ${phase}`);

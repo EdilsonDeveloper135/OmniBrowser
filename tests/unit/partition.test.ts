@@ -16,8 +16,8 @@ describe('profile partition mapping', () => {
   });
 
   it('uses a launch-scoped in-memory partition without persist:', () => {
-    const partition = partitionForProfile({ ...baseProfile, kind: 'temporary' }, 'launch-a');
-    expect(partition).toBe('omnibrowser-temp-launch-a-6c53840e-68e4-4c65-a767-24924cf02a60');
+    const partition = partitionForProfile({ ...baseProfile, kind: 'private' }, 'launch-a');
+    expect(partition).toBe('omnibrowser-private-launch-a-6c53840e-68e4-4c65-a767-24924cf02a60');
     expect(partition.startsWith('persist:')).toBe(false);
   });
 });

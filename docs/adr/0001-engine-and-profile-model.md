@@ -15,7 +15,7 @@ La decisión no podía basarse solo en cookies. Debían probarse cookies persist
 Usar Electron 44.4.1 con Chromium, TypeScript/React y Electron Forge/Webpack. El shell vive en un único `BrowserWindow` y cada navegador remoto en un `WebContentsView`.
 
 - Perfil persistente: `session.fromPartition("persist:omnibrowser-profile-<uuid>", { cache: true })`.
-- Perfil temporal: partición sin `persist:` y con UUID de lanzamiento.
+- Perfil Private: partición sin `persist:` y con UUID de lanzamiento; no se serializa en el workspace.
 - Una misma partición se reutiliza; el almacenamiento no se copia manualmente.
 - Cambiar de perfil destruye/recrea la vista.
 - Los popups se adoptan usando el `WebContents` entregado a `createWindow`.
@@ -27,7 +27,7 @@ Documentación de referencia: [Electron Session](https://www.electronjs.org/docs
 
 | Gate | Resultado arm64 | Criterio observado |
 |---|---|---|
-| almacenamiento/perfiles | pasa | A/B comparten almacenamiento durable; C aislado; sesión cookie desaparece; temp desaparece; reasignación funciona |
+| almacenamiento/perfiles | pasa | A/B comparten almacenamiento durable; C aislado; sesión cookie desaparece; Private desaparece; reasignación funciona |
 | canvas nativo | pasa | pan/zoom/bounds/Retina, ocultamiento y elevación por re-add |
 | popup/opener | pasa | misma sesión, opener, `postMessage`, navegación y `window.close` |
 | recursos/suspensión | pasa | métricas 1/5/10, ocultamiento, destrucción y wake con perfil/URL/historial |

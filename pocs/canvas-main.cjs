@@ -90,21 +90,40 @@ app.whenReady().then(async () => {
     });
 
     window.contentView.addChildView(views[0]);
-    window.showInactive();
-    await new Promise((resolve) => setTimeout(resolve, 350));
+    // A foreground window is required for deterministic native-child
+    // composition on macOS. showInactive() can expose only the shell surface
+    // while its WebContentsViews remain absent from window captures.
+    window.show();
+    window.focus();
+    await new Promise((resolve) => setTimeout(resolve, 150));
     const children = window.contentView.children;
     const topChildIsReaddedView = children[children.length - 1] === views[0];
     let capture = null;
     let captureMethod = 'desktopCapturer';
     let captureLimitation = null;
+    const overlapSamplePoint = {
+      x: Math.max(transformedBounds[0].x, transformedBounds[1].x) + 30,
+      y: Math.max(transformedBounds[0].y, transformedBounds[1].y) + 30
+    };
     try {
-      const sources = await desktopCapturer.getSources({
-        types: ['window'],
-        thumbnailSize: { width: 1200, height: 750 },
-        fetchWindowIcons: false
-      });
-      const source = sources.find((candidate) => candidate.id === window.getMediaSourceId()) || sources.find((candidate) => candidate.name === 'OmniBrowser Canvas POC');
-      if (source && !source.thumbnail.isEmpty()) capture = source.thumbnail;
+      // A freshly shown WebContentsView can lag the BrowserWindow surface by a
+      // compositor frame (and occasionally longer after another Electron POC
+      // shuts down). Poll the composed window instead of treating one early,
+      // shell-only thumbnail as a product failure.
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        const sources = await desktopCapturer.getSources({
+          types: ['window'],
+          thumbnailSize: { width: 1200, height: 750 },
+          fetchWindowIcons: false
+        });
+        const source = sources.find((candidate) => candidate.id === window.getMediaSourceId()) || sources.find((candidate) => candidate.name === 'OmniBrowser Canvas POC');
+        if (source && !source.thumbnail.isEmpty()) {
+          capture = source.thumbnail;
+          const candidateSample = sample(capture, overlapSamplePoint.x, overlapSamplePoint.y, window.getContentBounds());
+          if (colorDistance(candidateSample, { red: 210, green: 60, blue: 80 }) < 90) break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
     } catch (error) {
       captureLimitation = error instanceof Error ? error.message : String(error);
     }
@@ -129,7 +148,7 @@ app.whenReady().then(async () => {
 
     const isCompositeCapture = captureMethod !== 'shell-only-capturePage';
     const sampledColor = isCompositeCapture
-      ? sample(capture, Math.max(transformedBounds[0].x, transformedBounds[1].x) + 30, Math.max(transformedBounds[0].y, transformedBounds[1].y) + 30, window.getContentBounds())
+      ? sample(capture, overlapSamplePoint.x, overlapSamplePoint.y, window.getContentBounds())
       : null;
     const renderedSelectedViewIsRed = isCompositeCapture
       ? colorDistance(sampledColor, { red: 210, green: 60, blue: 80 }) < 90

@@ -13,7 +13,8 @@ import {
   MIN_BROWSER_WIDTH,
   MIN_ZOOM,
   MINIMAP_MARGIN,
-  MINIMAP_SIZE
+  MINIMAP_SIZE,
+  SNAP_THRESHOLD_PX
 } from './constants';
 import type { Camera, LayoutItem, ScreenRect, WorldRect } from './schemas';
 
@@ -31,11 +32,26 @@ export interface CanvasCard {
   zIndex: number;
   suspended: boolean;
   crashed: boolean;
+  nativeHidden?: boolean;
+  chromeHidden?: boolean;
+  surfaceLayer?: LayoutItem['surfaceLayer'];
+  screenContentBounds?: ScreenRect;
+  screenChromeBounds?: ScreenRect;
 }
 
 export interface CanvasLayout {
   items: LayoutItem[];
   minimapCovered: boolean;
+}
+
+export interface SnapGuide {
+  axis: 'x' | 'y';
+  worldPosition: number;
+}
+
+export interface SoftSnapResult {
+  rect: WorldRect;
+  guides: SnapGuide[];
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {
@@ -120,6 +136,75 @@ export function screenRectFullyInside(rect: ScreenRect, viewport: ScreenRect): b
   return rect.x >= viewport.x && rect.y >= viewport.y && rect.x + rect.width <= viewport.x + viewport.width && rect.y + rect.height <= viewport.y + viewport.height;
 }
 
+export function boundsForWorldRects(rects: readonly WorldRect[], padding = 0): WorldRect | null {
+  if (rects.length === 0) return null;
+  const left = Math.min(...rects.map((rect) => rect.x));
+  const top = Math.min(...rects.map((rect) => rect.y));
+  const right = Math.max(...rects.map((rect) => rect.x + rect.width));
+  const bottom = Math.max(...rects.map((rect) => rect.y + rect.height));
+  return { x: left - padding, y: top - padding, width: right - left + padding * 2, height: bottom - top + padding * 2 };
+}
+
+function nearestOffset(anchors: readonly number[], targets: readonly number[], threshold: number): { offset: number; target: number } | null {
+  let best: { offset: number; target: number } | null = null;
+  for (const anchor of anchors) {
+    for (const target of targets) {
+      const offset = target - anchor;
+      if (Math.abs(offset) > threshold || (best && Math.abs(best.offset) <= Math.abs(offset))) continue;
+      best = { offset, target };
+    }
+  }
+  return best;
+}
+
+/** Soft alignment for a moving card. The threshold is expressed in screen pixels and converted to world units. */
+export function snapMovedWorldRect(rect: WorldRect, targets: readonly WorldRect[], zoom: number, thresholdPx = SNAP_THRESHOLD_PX): SoftSnapResult {
+  const threshold = thresholdPx / clampZoom(zoom);
+  const targetXs = targets.flatMap((target) => [target.x, target.x + target.width / 2, target.x + target.width]);
+  const targetYs = targets.flatMap((target) => [target.y, target.y + target.height / 2, target.y + target.height]);
+  const x = nearestOffset([rect.x, rect.x + rect.width / 2, rect.x + rect.width], targetXs, threshold);
+  const y = nearestOffset([rect.y, rect.y + rect.height / 2, rect.y + rect.height], targetYs, threshold);
+  return {
+    rect: { ...rect, x: rect.x + (x?.offset ?? 0), y: rect.y + (y?.offset ?? 0) },
+    guides: [
+      ...(x ? [{ axis: 'x' as const, worldPosition: x.target }] : []),
+      ...(y ? [{ axis: 'y' as const, worldPosition: y.target }] : [])
+    ]
+  };
+}
+
+/** Soft alignment for the edges controlled by an active resize handle. */
+export function snapResizedWorldRect(rect: WorldRect, direction: string, targets: readonly WorldRect[], zoom: number, thresholdPx = SNAP_THRESHOLD_PX): SoftSnapResult {
+  const threshold = thresholdPx / clampZoom(zoom);
+  const targetXs = targets.flatMap((target) => [target.x, target.x + target.width / 2, target.x + target.width]);
+  const targetYs = targets.flatMap((target) => [target.y, target.y + target.height / 2, target.y + target.height]);
+  const horizontalEdge = direction.includes('w') ? rect.x : direction.includes('e') ? rect.x + rect.width : null;
+  const verticalEdge = direction.includes('n') ? rect.y : direction.includes('s') ? rect.y + rect.height : null;
+  const x = horizontalEdge === null ? null : nearestOffset([horizontalEdge], targetXs, threshold);
+  const y = verticalEdge === null ? null : nearestOffset([verticalEdge], targetYs, threshold);
+  let next = { ...rect };
+  if (x) {
+    if (direction.includes('w')) {
+      next.x += x.offset;
+      next.width -= x.offset;
+    } else next.width += x.offset;
+  }
+  if (y) {
+    if (direction.includes('n')) {
+      next.y += y.offset;
+      next.height -= y.offset;
+    } else next.height += y.offset;
+  }
+  next = clampWorldRect(next);
+  return {
+    rect: next,
+    guides: [
+      ...(x ? [{ axis: 'x' as const, worldPosition: x.target }] : []),
+      ...(y ? [{ axis: 'y' as const, worldPosition: y.target }] : [])
+    ]
+  };
+}
+
 export function shouldShowNativeView(zoom: number, contentRect: ScreenRect, viewport: ScreenRect, suspended: boolean): boolean {
   return !suspended && zoom >= INTERACTIVE_ZOOM_THRESHOLD && screenRectFullyInside(contentRect, viewport);
 }
@@ -160,17 +245,33 @@ function clampToScreenSchema(rect: ScreenRect): ScreenRect {
  */
 export function computeCanvasLayout(cards: readonly CanvasCard[], camera: Camera, viewport: ScreenRect, occluders: readonly ScreenRect[] = []): CanvasLayout {
   const origin = { x: viewport.x, y: viewport.y };
-  const chrome = cards.map((card) => ({ zIndex: card.zIndex, rect: projectCardChrome(card.worldRect, camera, origin) }));
+  const layerRank = (layer: LayoutItem['surfaceLayer'] | undefined) => layer === 'immersive' ? 2 : layer === 'pinned' ? 1 : 0;
+  const chrome = cards.filter((card) => !card.chromeHidden).map((card) => ({
+    id: card.id,
+    layer: layerRank(card.surfaceLayer),
+    zIndex: card.zIndex,
+    rect: card.screenChromeBounds ?? projectCardChrome(card.worldRect, camera, origin)
+  }));
   const minimap = minimapRect(viewport);
   let minimapCovered = false;
   const items = cards.map((card) => {
-    const bounds = projectWorldRect(card.worldRect, camera, origin);
-    const visible = shouldShowNativeView(camera.zoom, bounds, viewport, card.suspended)
+    const bounds = card.screenContentBounds ?? projectWorldRect(card.worldRect, camera, origin);
+    const directSurface = card.screenContentBounds !== undefined;
+    const ownLayer = layerRank(card.surfaceLayer);
+    const visible = !card.nativeHidden
+      && !card.suspended
+      && (directSurface ? screenRectFullyInside(bounds, viewport) : shouldShowNativeView(camera.zoom, bounds, viewport, false))
       && !card.crashed
-      && !chrome.some((other) => other.zIndex > card.zIndex && screenRectsIntersect(bounds, other.rect))
+      && !chrome.some((other) => other.id !== card.id && (other.layer > ownLayer || (other.layer === ownLayer && other.zIndex > card.zIndex)) && screenRectsIntersect(bounds, other.rect))
       && !occluders.some((occluder) => screenRectsIntersect(bounds, occluder));
     if (visible && screenRectsIntersect(bounds, minimap)) minimapCovered = true;
-    return { browserId: card.id, worldRect: clampWorldRect(card.worldRect), screenBounds: clampToScreenSchema(bounds), visible };
+    return {
+      browserId: card.id,
+      worldRect: clampWorldRect(card.worldRect),
+      screenBounds: clampToScreenSchema(bounds),
+      visible,
+      surfaceLayer: card.surfaceLayer ?? 'normal'
+    };
   });
   return { items, minimapCovered };
 }

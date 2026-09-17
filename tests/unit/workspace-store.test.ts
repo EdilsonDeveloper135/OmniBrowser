@@ -37,6 +37,24 @@ function withHistory(workspace: WorkspaceFile, entries: number, urlLength: numbe
   };
 }
 
+function asLegacyV1(workspace: WorkspaceFile): Record<string, unknown> {
+  const legacyWorkspace = structuredClone(workspace) as unknown as Record<string, unknown>;
+  legacyWorkspace.schemaVersion = 1;
+  delete legacyWorkspace.zones;
+  delete legacyWorkspace.stacks;
+  delete legacyWorkspace.browserOrder;
+  delete legacyWorkspace.preferences;
+  legacyWorkspace.browsers = workspace.browsers.map((browser) => {
+    const legacyBrowser = structuredClone(browser) as unknown as Record<string, unknown>;
+    delete legacyBrowser.zoneId;
+    delete legacyBrowser.presentation;
+    delete legacyBrowser.positionLocked;
+    delete legacyBrowser.pin;
+    return legacyBrowser;
+  });
+  return legacyWorkspace;
+}
+
 describe('WorkspaceStore', () => {
   it('writes and loads a validated atomic workspace file', async () => {
     const directory = await temporaryDirectory();
@@ -47,6 +65,27 @@ describe('WorkspaceStore', () => {
     expect(loaded.recoveredFrom).toBe('primary');
     expect(loaded.workspace).toEqual(workspace);
     expect(JSON.parse(await readFile(store.workspacePath, 'utf8'))).toEqual(workspace);
+  });
+
+  it('creates one immutable V1 recovery copy before the first V2 write', async () => {
+    const directory = await temporaryDirectory();
+    const store = new WorkspaceStore(directory);
+    const legacy = `${JSON.stringify(asLegacyV1(createInitialWorkspace()), null, 2)}\n`;
+    await writeFile(store.workspacePath, legacy, 'utf8');
+
+    const loaded = await store.load(createInitialWorkspace);
+    expect(loaded.recoveredFrom).toBe('primary');
+    expect(loaded.workspace.schemaVersion).toBe(2);
+    expect(await store.save(loaded.workspace)).toBe('written');
+    const recoveryPath = path.join(directory, 'workspace.v1-backup.json');
+    expect(await readFile(recoveryPath, 'utf8')).toBe(legacy);
+    expect((await lstat(recoveryPath)).mode & 0o777).toBe(0o600);
+
+    await writeFile(recoveryPath, 'existing recovery copy', 'utf8');
+    const reopened = new WorkspaceStore(directory);
+    await reopened.load(createInitialWorkspace);
+    await reopened.save({ ...loaded.workspace, camera: { panX: 7, panY: 9, zoom: 1 } });
+    expect(await readFile(recoveryPath, 'utf8')).toBe('existing recovery copy');
   });
 
   it('recovers from backup and preserves the corrupt primary on the next save', async () => {
@@ -89,18 +128,18 @@ describe('WorkspaceStore', () => {
   it('preserves a workspace written by a newer schema version instead of discarding it on downgrade', async () => {
     const directory = await temporaryDirectory();
     const store = new WorkspaceStore(directory);
-    const future = JSON.stringify({ ...createInitialWorkspace(), schemaVersion: 2, futureField: 'user data from a newer release' });
+    const future = JSON.stringify({ ...createInitialWorkspace(), schemaVersion: 3, futureField: 'user data from a newer release' });
     await writeFile(store.workspacePath, future, 'utf8');
     await writeFile(store.backupPath, future, 'utf8');
 
     const loaded = await store.load(createInitialWorkspace);
     expect(loaded.recoveredFrom).toBe('new');
-    expect(loaded.warning).toMatch(/versión más reciente de OmniBrowser \(esquema 2\)/);
+    expect(loaded.warning).toMatch(/versión más reciente de OmniBrowser \(esquema 3\)/);
     await store.save(loaded.workspace);
     await store.save({ ...loaded.workspace, camera: { panX: 3, panY: 3, zoom: 1 } });
 
     const files = await filesIn(directory);
-    const preserved = Object.entries(files).filter(([name]) => name.includes('.future-v2-'));
+    const preserved = Object.entries(files).filter(([name]) => name.includes('.future-v3-'));
     expect(preserved).toHaveLength(2);
     expect(preserved.every(([, content]) => content === future)).toBe(true);
   });
@@ -177,6 +216,53 @@ describe('workspace migrations', () => {
   it('accepts the current schema unchanged', () => {
     const workspace = createInitialWorkspace();
     expect(migrateWorkspace(workspace)).toEqual(workspace);
+  });
+
+  it('upgrades V1 defaults and removes legacy temporary data and selection', () => {
+    const persistent = createInitialWorkspace();
+    const legacy = asLegacyV1(persistent);
+    const timestamp = new Date().toISOString();
+    const temporaryProfileId = '1c2b7a4e-5d6f-4a8b-9c0d-1e2f3a4b5c6d';
+    const temporaryBrowserId = '2d3c8b5f-6e7a-4b9c-8d0e-2f3a4b5c6d7e';
+    legacy.profiles = [
+      ...(legacy.profiles as Array<Record<string, unknown>>),
+      { id: temporaryProfileId, name: 'Temporal', kind: 'temporary', createdAt: timestamp, updatedAt: timestamp }
+    ];
+    legacy.browsers = [
+      ...(legacy.browsers as Array<Record<string, unknown>>),
+      {
+        id: temporaryBrowserId,
+        profileId: temporaryProfileId,
+        worldRect: { x: 10, y: 10, width: 640, height: 440 },
+        zIndex: 2,
+        url: 'https://private.example/secret',
+        title: 'Secret',
+        history: { entries: [{ url: 'https://private.example/secret', title: 'Secret' }], index: 0 },
+        suspended: false,
+        createdAt: timestamp,
+        updatedAt: timestamp
+      }
+    ];
+    legacy.selectedBrowserId = temporaryBrowserId;
+
+    const migrated = migrateWorkspace(legacy) as WorkspaceFile;
+    expect(migrated).toMatchObject({
+      schemaVersion: 2,
+      zones: [],
+      stacks: [],
+      preferences: { snapEnabled: false, historySwipeEnabled: false },
+      selectedBrowserId: null
+    });
+    expect(migrated.profiles).toHaveLength(1);
+    expect(migrated.browsers).toHaveLength(1);
+    expect(migrated.browserOrder).toEqual([persistent.browsers[0]!.id]);
+    expect(migrated.browsers[0]).toMatchObject({
+      zoneId: null,
+      presentation: 'normal',
+      positionLocked: false,
+      pin: { sidebar: false, viewport: null }
+    });
+    expect(JSON.stringify(migrated)).not.toContain('private.example');
   });
 
   it('rejects future and unknown versions explicitly', () => {

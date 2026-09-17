@@ -1,5 +1,6 @@
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { net, protocol } from 'electron';
+import { faviconResponse } from '../browser/favicon-cache';
 import { resolveShellRequestPath, SHELL_HOST, SHELL_SCHEME } from './shell-paths';
 
 export { SHELL_SCHEME } from './shell-paths';
@@ -43,6 +44,10 @@ export async function installShellProtocol(): Promise<string> {
   if (shellProtocolInstalled) return shellUrl;
   const rendererEntryPath = fileURLToPath(webpackEntry);
   protocol.handle(SHELL_SCHEME, async (request) => {
+    const requestUrl = new URL(request.url);
+    if (requestUrl.host === SHELL_HOST && requestUrl.pathname.startsWith('/favicon/')) {
+      return faviconResponse(requestUrl.pathname.slice('/favicon/'.length)) ?? new Response('Not found', { status: 404 });
+    }
     const targetPath = resolveShellRequestPath(request.url, rendererEntryPath);
     if (!targetPath) return new Response('Not found', { status: 404 });
     const fileResponse = await net.fetch(pathToFileURL(targetPath).toString());

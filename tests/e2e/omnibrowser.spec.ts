@@ -102,6 +102,19 @@ async function waitForSelectedBrowser(browserId: string): Promise<void> {
   await expect.poll(async () => (await snapshot()).selectedBrowserId).toBe(browserId);
 }
 
+async function openBrowserMenu(browserId: string): Promise<Locator> {
+  const card = shell.locator(`[data-browser-id="${browserId}"]`);
+  const menu = card.locator('.card-menu');
+  if (await menu.getAttribute('open') === null) await menu.locator('summary').click();
+  await expect(menu.locator('.card-menu-popover')).toBeVisible();
+  return menu;
+}
+
+async function assignBrowserProfile(browserId: string, profileId: string): Promise<void> {
+  const menu = await openBrowserMenu(browserId);
+  await menu.getByRole('combobox', { name: /Perfil de/ }).selectOption(profileId);
+}
+
 async function selectedBrowserTitle(): Promise<string> {
   const state = await snapshot();
   return state.browsers.find((browser) => browser.id === state.selectedBrowserId)?.title ?? '';
@@ -241,12 +254,12 @@ test.describe.serial('OmniBrowser production renderer bundle and native-view run
     await electronApp.evaluate(({ dialog }) => {
       dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
     });
-    await shell.locator(`[data-browser-id="${personalBrowser!.id}"] select`).selectOption(work!.id);
+    await assignBrowserProfile(personalBrowser!.id, work!.id);
     await expect.poll(async () => (await snapshot()).browsers.find((browser) => browser.id === personalBrowser!.id)?.profileId).toBe(work!.id);
     await navigate(`${fixtureOrigin}/read`);
     await expect.poll(selectedBrowserTitle).toBe(`READ p:${sharedToken} s:${sharedToken} l:${sharedToken}`);
 
-    await shell.locator(`[data-browser-id="${personalBrowser!.id}"] select`).selectOption(personal!.id);
+    await assignBrowserProfile(personalBrowser!.id, personal!.id);
     await expect.poll(async () => (await snapshot()).browsers.find((browser) => browser.id === personalBrowser!.id)?.profileId).toBe(personal!.id);
     await navigate(`${fixtureOrigin}/read`);
     await expect.poll(selectedBrowserTitle).toBe('READ p:none s:none l:none');
@@ -274,17 +287,18 @@ test.describe.serial('OmniBrowser production renderer bundle and native-view run
     await expect.poll(() => reloadRequestCount).toBeGreaterThanOrEqual(2);
 
     const selectedCard = shell.locator(`[data-browser-id="${workBrowser!.id}"]`);
-    await selectedCard.getByRole('button', { name: 'Suspender' }).click();
+    await (await openBrowserMenu(workBrowser!.id)).getByRole('button', { name: 'Suspender' }).click();
     await expect(selectedCard.getByText('Navegador en reposo')).toBeVisible();
-    await selectedCard.getByRole('button', { name: 'Reactivar' }).click();
+    await selectedCard.locator('.browser-placeholder').getByRole('button', { name: 'Activar navegador' }).click();
     await expect.poll(async () => (await snapshot()).browsers.find((browser) => browser.id === workBrowser!.id)?.runtime.isAwake).toBe(true);
     await expect(shell.getByText(/No se pudo restaurar todo el historial/)).toHaveCount(0);
 
     const beforeMove = (await snapshot()).browsers.find((browser) => browser.id === workBrowser!.id)!.worldRect;
     const browserHeader = selectedCard.locator('.browser-card-header');
-    const headerBox = await browserHeader.boundingBox();
+    const dragGrip = browserHeader.locator('.drag-grip');
+    const headerBox = await dragGrip.boundingBox();
     if (!headerBox) throw new Error('Browser header has no layout box.');
-    await dragPointer(browserHeader, { x: headerBox.x + 150, y: headerBox.y + 18 }, { x: 60, y: 40 }, 5);
+    await dragPointer(dragGrip, { x: headerBox.x + headerBox.width / 2, y: headerBox.y + headerBox.height / 2 }, { x: 60, y: 40 }, 5);
     await expect.poll(async () => (await snapshot()).browsers.find((browser) => browser.id === workBrowser!.id)?.worldRect.x).toBeGreaterThan(beforeMove.x + 20);
 
     const beforeResize = (await snapshot()).browsers.find((browser) => browser.id === workBrowser!.id)!.worldRect;
@@ -305,15 +319,17 @@ test.describe.serial('OmniBrowser production renderer bundle and native-view run
     }, { x: -50, y: -40 }, 9);
     await expect.poll(async () => (await snapshot()).camera.panX).not.toBe(cameraBeforePan.panX);
 
-    for (let index = 0; index < 4; index += 1) await shell.getByRole('button', { name: 'Alejar' }).click();
+    for (let index = 0; index < 8 && await shell.locator('.semantic-card').count() === 0; index += 1) {
+      await shell.getByRole('button', { name: 'Alejar' }).click();
+    }
     await expect(shell.locator('.semantic-card')).toHaveCount(3);
     await shell.screenshot({ path: path.join(visualArtifactDirectory, `implementation-semantic-zoom-${visualArchitecture}.png`) });
-    await shell.locator('.semantic-card.is-selected').click();
+    await shell.locator('.semantic-card').last().click();
     await expect(shell.locator('.browser-card')).toHaveCount(3);
     await expect.poll(async () => (await snapshot()).camera.zoom).toBe(0.72);
   });
 
-  test('blocks unsafe URLs, persists durable state, and excludes temporary state after restart', async () => {
+  test('blocks unsafe URLs, persists durable state, and excludes private state after restart', async () => {
     await navigate('javascript:alert(1)');
     await expect(shell.locator('.notice-toast')).toContainText('no está permitido');
     await expect(shell.locator('.notice-toast')).not.toContainText('Error invoking remote method');
@@ -321,16 +337,16 @@ test.describe.serial('OmniBrowser production renderer bundle and native-view run
 
     await shell.getByRole('button', { name: 'Perfil', exact: true }).click();
     await shell.getByPlaceholder('Nombre').fill('Descartable');
-    await shell.getByRole('button', { name: 'Temporal', exact: true }).click();
+    await shell.getByRole('button', { name: 'Private', exact: true }).click();
     await shell.getByRole('button', { name: 'Crear perfil' }).click();
     await shell.getByRole('button', { name: 'Abrir navegador' }).click();
     const beforeRestart = await snapshot();
-    const temporary = beforeRestart.profiles.find((profile) => profile.name === 'Descartable');
-    const temporaryBrowser = beforeRestart.browsers.find((browser) => browser.profileId === temporary?.id);
+    const privateProfile = beforeRestart.profiles.find((profile) => profile.name === 'Descartable');
+    const privateBrowser = beforeRestart.browsers.find((browser) => browser.profileId === privateProfile?.id);
     const persistentProfileIds = new Set(beforeRestart.profiles.filter((profile) => profile.kind === 'persistent').map((profile) => profile.id));
     const expectedPersistentBrowserCount = beforeRestart.browsers.filter((browser) => persistentProfileIds.has(browser.profileId)).length;
-    expect(temporary?.kind).toBe('temporary');
-    expect(temporaryBrowser).toBeTruthy();
+    expect(privateProfile?.kind).toBe('private');
+    expect(privateBrowser).toBeTruthy();
     await expect(shell.locator('.browser-card')).toHaveCount(beforeRestart.browsers.length);
 
     await shell.evaluate(() => window.omniBrowser.workspace.saveNow());
@@ -341,7 +357,7 @@ test.describe.serial('OmniBrowser production renderer bundle and native-view run
     const restored = await snapshot();
     expect(restored.profiles.some((profile) => profile.name === 'Trabajo' && profile.kind === 'persistent')).toBe(true);
     expect(restored.profiles.some((profile) => profile.name === 'Descartable')).toBe(false);
-    expect(restored.browsers.some((browser) => browser.id === temporaryBrowser!.id)).toBe(false);
+    expect(restored.browsers.some((browser) => browser.id === privateBrowser!.id)).toBe(false);
 
     const restoredWork = restored.profiles.find((profile) => profile.name === 'Trabajo');
     const restoredWorkBrowser = restored.browsers.find((browser) => browser.profileId === restoredWork?.id);

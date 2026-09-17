@@ -44,15 +44,15 @@ const sharedStorage = (value, expectSessionCookie) => {
     emptyStorage(seed.isolatedRead);
     assert.equal(seed.sharedWrite.httpCacheBody, seed.sharedHttpCacheBody);
     assert.notEqual(seed.sharedHttpCacheBody, seed.isolatedHttpCacheBody);
-    assert.equal(seed.temporaryRead.localStorage, 'temporary-profile-token');
-    assert.equal(seed.temporaryRead.sessionCookie, 'temporary-profile-token');
-    assert.equal(seed.temporaryWrite.httpCacheBody, seed.temporaryHttpCacheBody);
+    assert.equal(seed.privateRead.localStorage, 'private-profile-token');
+    assert.equal(seed.privateRead.sessionCookie, 'private-profile-token');
+    assert.equal(seed.privateWrite.httpCacheBody, seed.privateHttpCacheBody);
     sharedStorage(seed.reassignedBeforeRead, true);
     emptyStorage(seed.reassignedAfterRead);
     sharedStorage(seed.originalProfileAfterReassign, true);
     assert.equal(server.counters.get('/http-cache/shared'), 2);
-    assert.equal(server.counters.get('/http-cache/temporary'), 1);
-    assert.equal(seed.storagePaths.temporary, null);
+    assert.equal(server.counters.get('/http-cache/private'), 1);
+    assert.equal(seed.storagePaths.private, null);
 
     await runElectron(entry, [
       '--phase=verify',
@@ -64,12 +64,12 @@ const sharedStorage = (value, expectSessionCookie) => {
     sharedStorage(verify.sharedReadA, false);
     sharedStorage(verify.sharedReadB, false);
     emptyStorage(verify.isolatedRead);
-    emptyStorage(verify.temporaryReadA);
-    emptyStorage(verify.temporaryReadB);
+    emptyStorage(verify.privateReadA);
+    emptyStorage(verify.privateReadB);
     assert.equal(verify.sharedHttpCacheBody, seed.sharedHttpCacheBody);
     assert.equal(server.counters.get('/http-cache/shared'), 2);
-    assert.equal(server.counters.get('/http-cache/temporary'), 2);
-    assert.notEqual(verify.temporaryHttpCacheBody, seed.temporaryHttpCacheBody);
+    assert.equal(server.counters.get('/http-cache/private'), 2);
+    assert.notEqual(verify.privateHttpCacheBody, seed.privateHttpCacheBody);
 
     const report = {
       poc: 'profiles-and-storage',
@@ -87,7 +87,7 @@ const sharedStorage = (value, expectSessionCookie) => {
         cacheStorageAfterRestart: true,
         serviceWorkerAfterRestart: true,
         httpCacheSharedAndPersistent: true,
-        temporaryPartitionClearedAfterRestart: true,
+        privatePartitionClearedAfterRestart: true,
         profileReassignmentByRecreation: true
       }
     };

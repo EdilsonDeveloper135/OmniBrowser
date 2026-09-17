@@ -181,7 +181,7 @@ Las pruebas empíricas usaron el bundle de producción sin modificar (sondas Pla
 | F-30 | La E2E reescribe evidencias visuales versionadas en cada ejecución | `tests/e2e/omnibrowser.spec.ts:307,334,377` | Escribir en `test-results/` salvo petición explícita |
 | F-31 | Los POC validan primitivas aisladas, no `BrowserRuntime` | `pocs/*` | Pruebas E2E de integración sobre el runtime real |
 | F-32 | La documentación dice "completamente fuera"; el código oculta también las tarjetas parcialmente fuera | `docs/architecture.md:80` | Corregir la documentación |
-| F-33 | El constructor falla si existe un perfil persistente llamado "Temporal" | `workspace-model.ts:92,125-126` | Nombre temporal único |
+| F-33 | El constructor falla si existe un perfil persistente llamado "Private" | `workspace-model.ts` | Nombre Private único |
 | F-34 | `omnibrowser://` no valida el host; `decodeURIComponent` puede lanzar | `protocol/shell-protocol.ts:27-37` | Validar el host y devolver 400 |
 | F-35 | Sin guardia global `web-contents-created` | `src/main/index.ts` | Denegar `window.open` y `<webview>` por defecto |
 | F-36 | `npm start` reemplaza `.webpack/<arch>` y `test:e2e:only` expira | flujo de desarrollo | Documentar |
@@ -261,7 +261,7 @@ Las pruebas de regresión E2E (`tests/e2e/runtime-regressions.spec.ts`) se ejecu
 | F-30 | corregido | capturas en `test-results/visual/` salvo `OMNIBROWSER_UPDATE_VISUAL_EVIDENCE=1` | `git status` limpio tras las E2E |
 | F-31 | corregido | suite E2E sobre el runtime real | 17 E2E nuevas |
 | F-32 | corregido | documentación de arquitectura actualizada | — |
-| F-33 | corregido | nombre temporal único | unit `workspace-model` |
+| F-33 | corregido | nombre Private único | unit `workspace-model` |
 | F-34 | corregido | `shell-paths.ts` valida host, escapes, NUL y confinamiento | unit `main-guards` |
 | F-35 | corregido | `installWebContentsGuards` | E2E `<webview>` inerte sin `WebContents` invitado; la guardia global no se prueba aislada |
 | F-36 | documentado | README | — |

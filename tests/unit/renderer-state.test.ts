@@ -21,20 +21,24 @@ function browser(id: string, overrides: Partial<BrowserSnapshot> = {}): BrowserS
   return {
     id,
     profileId: 'p',
+    zoneId: null,
     worldRect: { x: 0, y: 0, width: 320, height: 240 },
     zIndex: 1,
     url: 'about:blank',
     title: 'Nueva página',
     suspended: false,
+    presentation: 'normal',
+    positionLocked: false,
+    pin: { sidebar: false, viewport: null },
     createdAt: '2026-09-16T00:00:00.000Z',
     updatedAt: '2026-09-16T00:00:00.000Z',
-    runtime: { isAwake: true, isLoading: false, canGoBack: false, canGoForward: false, crashed: false },
+    runtime: { isAwake: true, isLoading: false, canGoBack: false, canGoForward: false, crashed: false, isAudible: false, faviconKey: null, download: { activeCount: 0, receivedBytes: 0, totalBytes: null, status: 'idle' }, lastError: null },
     ...overrides
   };
 }
 
 function snapshot(browsers: BrowserSnapshot[], camera = { panX: 0, panY: 0, zoom: 1 }): WorkspaceSnapshot {
-  return { schemaVersion: 1, profiles: [], browsers, camera, selectedBrowserId: null, saveStatus: 'saved', createdAt: '2026-09-16T00:00:00.000Z', updatedAt: '2026-09-16T00:00:00.000Z' };
+  return { schemaVersion: 2, profiles: [], browsers, zones: [], stacks: [], browserOrder: browsers.map(({ id }) => id), preferences: { snapEnabled: false, historySwipeEnabled: false }, camera, selectedBrowserId: null, saveStatus: 'saved', createdAt: '2026-09-16T00:00:00.000Z', updatedAt: '2026-09-16T00:00:00.000Z' };
 }
 
 describe('LayoutCommitter', () => {
@@ -81,7 +85,7 @@ describe('snapshot merging during gestures', () => {
   it('keeps the dragged card geometry and the panned camera while main-process snapshots arrive', () => {
     const local = snapshot([browser('a', { worldRect: { x: 400, y: 300, width: 320, height: 240 } }), browser('b')], { panX: -90, panY: 12, zoom: 1 });
     const incoming = snapshot([browser('a', { title: 'Nuevo título' }), browser('b', { worldRect: { x: 5, y: 5, width: 320, height: 240 } })]);
-    const duringCardDrag = mergeWorkspaceSnapshot(local, incoming, { kind: 'card', browserId: 'a' });
+    const duringCardDrag = mergeWorkspaceSnapshot(local, incoming, { kind: 'cards', browserIds: ['a'] });
     expect(duringCardDrag.browsers[0]).toMatchObject({ title: 'Nuevo título', worldRect: { x: 400, y: 300 } });
     expect(duringCardDrag.browsers[1]?.worldRect.x).toBe(5);
     expect(mergeWorkspaceSnapshot(local, incoming, { kind: 'canvas' }).camera).toEqual(local.camera);
@@ -90,7 +94,7 @@ describe('snapshot merging during gestures', () => {
 
   it('applies browser runtime state without overwriting geometry or z-order', () => {
     const local = snapshot([browser('a', { worldRect: { x: 400, y: 300, width: 320, height: 240 }, zIndex: 3 })]);
-    const merged = mergeBrowserState(local, browser('a', { title: 'Cargando', runtime: { isAwake: true, isLoading: true, canGoBack: true, canGoForward: false, crashed: false } }));
+    const merged = mergeBrowserState(local, browser('a', { title: 'Cargando', runtime: { isAwake: true, isLoading: true, canGoBack: true, canGoForward: false, crashed: false, isAudible: false, faviconKey: null, download: { activeCount: 0, receivedBytes: 0, totalBytes: null, status: 'idle' }, lastError: null } }));
     expect(merged?.browsers[0]).toMatchObject({ title: 'Cargando', zIndex: 3, worldRect: { x: 400, y: 300 }, runtime: { isLoading: true, canGoBack: true } });
   });
 });

@@ -282,6 +282,39 @@ test.describe.serial('OmniBrowser performance observations', () => {
     await closeApp(tickingApp);
   });
 
+  test('sidebar search and snap derivation with 500 cards', async () => {
+    test.setTimeout(120_000);
+    const launched = await launch(seededWorkspace(500, '/static'));
+    await expect(launched.shell.locator('.profile-tree-section .sidebar-browser-row')).toHaveCount(500, { timeout: 20_000 });
+    const search = launched.shell.getByRole('textbox', { name: 'Buscar navegadores abiertos' });
+    const searchStarted = performance.now();
+    await search.fill('card 499');
+    await expect(launched.shell.locator('.profile-tree .sidebar-browser-row')).toHaveCount(1);
+    const searchLatencyMs = performance.now() - searchStarted;
+    await search.fill('');
+    await expect(launched.shell.locator('.profile-tree-section .sidebar-browser-row')).toHaveCount(500);
+
+    await launched.shell.getByRole('button', { name: 'Snap' }).click();
+    const firstCard = launched.shell.locator('.browser-card').first();
+    const browserId = await firstCard.getAttribute('data-browser-id');
+    const selector = `[data-browser-id="${browserId}"] .browser-card-header`;
+    const header = (await launched.shell.locator(selector).boundingBox())!;
+    const snapObservation = await measureWindow(launched, 1500, () => pagePointerGesture(
+      launched.shell,
+      selector,
+      { x: header.x + 120, y: header.y + 14 },
+      { x: 16, y: 12 },
+      60
+    ));
+    results['organization-500cards'] = {
+      searchLatencyMs: Number(searchLatencyMs.toFixed(2)),
+      indexedRows: 500,
+      snapDrag: snapObservation,
+      alignmentAfterSettle: await nativeAlignment(launched)
+    };
+    await closeApp(launched);
+  });
+
   // Each gesture starts from a fresh seeded workspace so that one scenario cannot move cards for the next one.
   // The deltas keep every card fully inside the canvas and free of overlaps before and after the gesture.
   test('canvas pan interaction', async () => {

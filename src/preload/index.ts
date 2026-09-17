@@ -15,21 +15,39 @@ const api: OmniBrowserApi = {
   profiles: {
     list: () => invoke(IPC_CHANNELS.profilesList),
     createPersistent: (name) => invoke(IPC_CHANNELS.profilesCreatePersistent, { name }),
-    createTemporary: (name) => invoke(IPC_CHANNELS.profilesCreateTemporary, { name })
+    createPrivate: (name) => invoke(IPC_CHANNELS.profilesCreatePrivate, { name })
   },
   browsers: {
     create: (profileId) => invoke(IPC_CHANNELS.browsersCreate, { profileId }),
     close: (browserId) => invoke(IPC_CHANNELS.browsersClose, { browserId }),
+    duplicate: (browserIds) => invoke(IPC_CHANNELS.browsersDuplicate, { browserIds }),
     assignProfile: (browserId, profileId) => invoke(IPC_CHANNELS.browsersAssignProfile, { browserId, profileId }),
+    setPresentation: (browserIds, presentation) => invoke(IPC_CHANNELS.browsersSetPresentation, { browserIds, presentation }),
+    setPositionLocked: (browserIds, locked) => invoke(IPC_CHANNELS.browsersSetPositionLocked, { browserIds, locked }),
+    setSidebarPinned: (browserIds, pinned) => invoke(IPC_CHANNELS.browsersSetSidebarPinned, { browserIds, pinned }),
+    setViewportPin: (browserId, viewport) => invoke(IPC_CHANNELS.browsersSetViewportPin, { browserId, viewport }),
     navigate: (browserId, url) => invoke(IPC_CHANNELS.browsersNavigate, { browserId, url }),
     back: (browserId) => invoke(IPC_CHANNELS.browsersBack, { browserId }),
     forward: (browserId) => invoke(IPC_CHANNELS.browsersForward, { browserId }),
     reload: (browserId) => invoke(IPC_CHANNELS.browsersReload, { browserId }),
+    stop: (browserId) => invoke(IPC_CHANNELS.browsersStop, { browserId }),
     focus: (browserId, options) => invoke(IPC_CHANNELS.browsersFocus, options?.focusContents === undefined ? { browserId } : { browserId, focusContents: options.focusContents }),
     sleep: (browserId) => invoke(IPC_CHANNELS.browsersSleep, { browserId }),
     wake: (browserId) => invoke(IPC_CHANNELS.browsersWake, { browserId })
   },
   workspace: {
+    clearFocus: () => invoke(IPC_CHANNELS.workspaceClearFocus),
+    createZone: (profileId, name, color, browserIds) => invoke(IPC_CHANNELS.workspaceCreateZone, { profileId, name, color, browserIds }),
+    updateZone: (zoneId, update) => invoke(IPC_CHANNELS.workspaceUpdateZone, { zoneId, ...update }),
+    setZoneCollapsed: (zoneId, collapsed) => invoke(IPC_CHANNELS.workspaceSetZoneCollapsed, { zoneId, collapsed }),
+    deleteZone: (zoneId) => invoke(IPC_CHANNELS.workspaceDeleteZone, { zoneId }),
+    assignZone: (browserIds, zoneId) => invoke(IPC_CHANNELS.workspaceAssignZone, { browserIds, zoneId }),
+    createStack: (zoneId, browserIds) => invoke(IPC_CHANNELS.workspaceCreateStack, { zoneId, browserIds }),
+    addStackMember: (stackId, browserId) => invoke(IPC_CHANNELS.workspaceAddStackMember, { stackId, browserId }),
+    selectStackMember: (stackId, browserId) => invoke(IPC_CHANNELS.workspaceSelectStackMember, { stackId, browserId }),
+    unstack: (stackId) => invoke(IPC_CHANNELS.workspaceUnstack, { stackId }),
+    setBrowserOrder: (browserOrder) => invoke(IPC_CHANNELS.workspaceSetBrowserOrder, { browserOrder }),
+    setPreferences: (update) => invoke(IPC_CHANNELS.workspaceSetPreferences, update),
     commitLayout: (layout) => invoke(IPC_CHANNELS.workspaceCommitLayout, layout),
     setCamera: (camera) => invoke(IPC_CHANNELS.workspaceSetCamera, { camera }),
     saveNow: () => invoke(IPC_CHANNELS.workspaceSaveNow)

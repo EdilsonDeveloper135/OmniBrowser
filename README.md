@@ -11,16 +11,18 @@ La diferencia esencial frente a una cuadrícula de iframes es el modelo de sesi�
 ## Qué incluye el MVP
 
 - múltiples navegadores Chromium dentro de un único `BrowserWindow`;
-- perfiles persistentes y perfiles temporales;
+- perfiles persistentes y perfiles Private locales, sin cuenta ni sincronización;
 - sesión compartida entre tarjetas del mismo perfil y aislamiento entre perfiles;
-- URL, atrás, adelante y recargar;
-- canvas con pan, zoom de 25–200 %, z-order, arrastre y resize;
+- URL, atrás, adelante, detener y recargar en el header de la tarjeta activa; los headers inactivos muestran sólo el dominio;
+- canvas con pan siempre disponible, zoom de 25–200 %, z-order, arrastre, resize, selección múltiple y snap suave opcional;
+- zonas colapsables, stacks, minimizar, bloquear posición, duplicar, fijar en sidebar/viewport, localizar y full screen reversible;
+- sidebar en árbol con perfiles, zonas, stacks, fijados, búsqueda, contadores, estados de runtime, cierre y drag-and-drop;
 - modo semántico por debajo de 50 % de zoom;
 - guardado atómico de workspace, historial URL/título y geometría;
 - restauración perezosa de vistas después de reiniciar;
 - suspensión manual que destruye el `WebContents` y lo reconstruye con la sesión correcta;
 - popups adoptados como tarjetas del mismo perfil, conservando `window.opener`, `postMessage` y `window.close`;
-- permisos y descargas denegados por defecto en el MVP;
+- permisos denegados por defecto y descargas explícitas mediante el diálogo nativo de guardado;
 - DMG y ZIP mediante Electron Forge.
 
 No hay backend, cuenta OmniBrowser, telemetría, sincronización cloud ni auto-update.
@@ -67,13 +69,15 @@ Los E2E usan el bundle Webpack de producción con Electron sin fuses porque Play
 | Perfil | Partición Electron | Disco | Tras reiniciar |
 |---|---|---|---|
 | Persistente | `persist:omnibrowser-profile-<uuid>` | Gestionado por Chromium | Vuelven perfil, tarjetas y almacenamiento durable |
-| Temporal | `omnibrowser-temp-<launch-id>-<uuid>` | En memoria durante el proceso | No vuelve perfil, tarjeta, URL ni historial |
+| Private | `omnibrowser-private-<launch-id>-<uuid>` | En memoria durante el proceso | No vuelve perfil, browser, URL, historial, zona, stack ni pin |
+
+> Private by design. No accounts, no sync servers, no browsing log. Your canvas lives on your machine.
 
 Compartir una partición no elimina las restricciones de origen, dominio, SameSite o top-level site. Por ejemplo, dos vistas del mismo perfil pueden reutilizar la sesión de un sitio, pero `https://a.example` no obtiene acceso arbitrario al almacenamiento DOM de `https://b.example`.
 
 Las cookies sin `expirationDate` son cookies de sesión: se comparten mientras OmniBrowser está abierto, pero no se exportan ni se reconstruyen después de salir. Las cookies persistentes y el resto del almacenamiento durable son responsabilidad de Chromium.
 
-Cambiar una tarjeta de perfil no muta una sesión activa. OmniBrowser pide confirmación, captura URL/historial sanitizado, destruye la vista y crea otra con la `Session` de destino. El perfil de origen queda intacto.
+Cambiar un browser de perfil no muta la sesión de origen. OmniBrowser pide confirmación, destruye la vista y crea otra con la `Session` de destino. Entre perfiles del mismo tipo conserva el historial sanitizado; al cruzar el límite Private/persistente transfiere únicamente la URL actual, nunca cookies, almacenamiento ni historial de sesión. El perfil de origen queda intacto.
 
 ## Arquitectura
 
@@ -96,20 +100,22 @@ El contenido remoto nunca recibe el preload del shell, Node.js, `ipcRenderer` ni
 
 En una app empaquetada, el workspace y los datos de Chromium viven bajo el directorio `userData` de Electron, normalmente `~/Library/Application Support/OmniBrowser` en macOS. Las ejecuciones de desarrollo (`npm start`) usan `~/Library/Application Support/OmniBrowser Development` para no compartir cookies ni workspace con la app instalada. Solo puede haber una instancia por directorio: abrir otra enfoca la ventana existente.
 
-- `workspace.json` contiene perfiles persistentes, URLs/títulos del historial, cámara, tarjetas y geometría.
+- `workspace.json` usa el esquema V2 y contiene sólo perfiles persistentes: URLs/títulos del historial, cámara, browsers, geometría, zonas, stacks, orden del sidebar, pins, presentación, bloqueo y preferencias.
 - `workspace.backup.json` conserva el último snapshot válido.
+- `workspace.v1-backup.json` conserva una copia única del archivo V1 original antes de la primera escritura V2.
 - Un archivo ilegible, o creado por una versión más reciente, nunca se sobrescribe: se conserva como `workspace.corrupt-*.json` o `workspace.future-v<N>-*.json` y la app avisa con su nombre.
 - Chromium conserva cookies y almacenamiento web dentro de sus particiones persistentes.
 - OmniBrowser no implementa un gestor de contraseñas ni exporta cookies o credenciales.
 
-Las URLs pueden contener información sensible; trate `workspace.json` como datos privados del usuario. Un perfil Temporal reduce persistencia de aplicación, pero no pretende ser un modo antiforense frente a un atacante con acceso al equipo.
+Las URLs pueden contener información sensible; trate `workspace.json` como datos privados del usuario. Un perfil Private evita el log propio y usa una sesión en memoria, pero no pretende ser un modo antiforense frente a un atacante con acceso al equipo. Una descarga que el usuario acepte puede permanecer en disco aunque se haya originado en un perfil Private; OmniBrowser no guarda una ruta ni un historial propio de descargas.
 
 ## Seguridad y límites conocidos
 
 - Solo se navega a `https:`, `http:` y `about:blank`.
 - Los protocolos externos requieren confirmación y una allowlist.
 - Cámara, micrófono, geolocalización, notificaciones, USB, Bluetooth, MIDI, captura de pantalla y permisos equivalentes se deniegan.
-- Las descargas están fuera de alcance y se cancelan.
+- Sólo un `WebContents` registrado puede iniciar una descarga. Electron muestra el diálogo nativo, OmniBrowser no elige la ruta, no la serializa y cancela descargas activas al destruir su browser o cerrar la aplicación.
+- Los gestos de trackpad que requieren cancelar eventos dentro de un `WebContentsView` —pan sobre un browser inactivo e historial horizontal— permanecen sin exponer hasta completar la matriz física Apple Silicon/Intel sin doble scroll o doble navegación. El canvas conserva rueda en área vacía, minimapa, flechas y Space+drag.
 - DevTools remotos solo están disponibles en desarrollo.
 - Un sitio puede detectar Electron, bloquear navegadores embebidos o exigir reautenticación. Compartir correctamente la partición no garantiza que un proveedor acepte su flujo OAuth.
 - La prueba manual con Google debe hacerse únicamente con una cuenta de prueba autorizada y nunca forma parte de CI.

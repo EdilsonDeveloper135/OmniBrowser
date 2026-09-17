@@ -28,12 +28,12 @@ El proyecto intentará confirmar recepción en 72 horas, evaluar severidad en si
 - escape de sandbox o acceso Node desde contenido remoto;
 - bypass del sender/validador IPC;
 - lectura o escritura entre perfiles distintos;
-- persistencia inesperada de perfiles temporales;
+- persistencia inesperada de perfiles Private, sus URLs, historial, zonas, stacks u orden;
 - apertura externa o navegación a esquemas bloqueados sin confirmación;
-- permiso o descarga concedidos pese a la política deny-by-default;
+- permiso concedido pese a la política deny-by-default, o descarga sin browser registrado/diálogo nativo;
 - manipulación de workspace que produzca ejecución de código;
 - bypass de fuses/integridad del paquete distribuido.
 
-No se consideran vulnerabilidad por sí solos: que una web detecte Electron, que un proveedor OAuth rechace el flujo, que una cookie de sesión desaparezca al cerrar, o artefactos forenses fuera del modelo declarado del perfil Temporal.
+No se consideran vulnerabilidad por sí solos: que una web detecte Electron, que un proveedor OAuth rechace el flujo, que una cookie de sesión desaparezca al cerrar, un archivo que el usuario haya aceptado guardar, o artefactos forenses fuera del modelo declarado del perfil Private.
 
 Consulte el [modelo de seguridad](docs/security-model.md) para activos, límites y amenazas fuera de alcance.

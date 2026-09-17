@@ -6,6 +6,6 @@ export function profileColor(profile: ProfileRecord, index: number): string {
   const normalizedName = profile.name.toLocaleLowerCase();
   if (normalizedName === 'personal') return COLORS[0];
   if (normalizedName === 'trabajo') return COLORS[1];
-  if (profile.kind === 'temporary' || normalizedName === 'temporal') return COLORS[2];
+  if (profile.kind === 'private' || normalizedName === 'private') return COLORS[2];
   return COLORS[index % COLORS.length] ?? COLORS[0];
 }

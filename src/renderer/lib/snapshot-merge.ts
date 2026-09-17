@@ -1,7 +1,7 @@
 import type { BrowserSnapshot, WorkspaceSnapshot } from '../../shared/schemas';
 
 /** Identifies what the pointer is currently manipulating; its local geometry wins over snapshots from the main process. */
-export type ActiveInteraction = { kind: 'card'; browserId: string } | { kind: 'canvas' } | null;
+export type ActiveInteraction = { kind: 'cards'; browserIds: string[] } | { kind: 'canvas' } | null;
 
 /**
  * Applies a full snapshot from the main process. The main process only knows geometry that the shell already committed,
@@ -10,11 +10,14 @@ export type ActiveInteraction = { kind: 'card'; browserId: string } | { kind: 'c
 export function mergeWorkspaceSnapshot(current: WorkspaceSnapshot | null, incoming: WorkspaceSnapshot, interaction: ActiveInteraction): WorkspaceSnapshot {
   if (!current || !interaction) return incoming;
   if (interaction.kind === 'canvas') return { ...incoming, camera: current.camera };
-  const local = current.browsers.find((browser) => browser.id === interaction.browserId);
-  if (!local) return incoming;
+  const localById = new Map(current.browsers.filter((browser) => interaction.browserIds.includes(browser.id)).map((browser) => [browser.id, browser]));
+  if (localById.size === 0) return incoming;
   return {
     ...incoming,
-    browsers: incoming.browsers.map((browser) => browser.id === local.id ? { ...browser, worldRect: local.worldRect } : browser)
+    browsers: incoming.browsers.map((browser) => {
+      const local = localById.get(browser.id);
+      return local ? { ...browser, worldRect: local.worldRect } : browser;
+    })
   };
 }
 

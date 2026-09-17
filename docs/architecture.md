@@ -6,7 +6,7 @@ El MVP es una aplicación macOS completamente local. Un único `BrowserWindow` a
 
 ```text
 ┌──────────────────────── Renderer confiable ────────────────────────┐
-│ React: toolbar, rail de perfiles, tarjetas, canvas y minimapa      │
+│ React: toolbar de canvas, árbol organizador, tarjetas y minimapa   │
 │   window.omniBrowser (API inmutable expuesta por preload)          │
 └──────────────────────────────┬──────────────────────────────────────┘
                                │ invoke/event IPC, esquemas Zod
@@ -30,8 +30,8 @@ El MVP es una aplicación macOS completamente local. Un único `BrowserWindow` a
 | `src/renderer` | interacción y proyección visual del workspace | acceder a Node, Electron o datos Chromium directamente |
 | `src/preload` | bridge mínimo tipado e inmutable | exponer `ipcRenderer`, canales arbitrarios o objetos Electron |
 | `src/main/ipc` | registrar la allowlist de comandos y validar el sender | aceptar mensajes de vistas remotas |
-| `WorkspaceModel` | invariantes de perfiles, tarjetas, cámara y proyección persistente | conocer `WebContents` o escribir archivos |
-| `WorkspaceStore` | validación Zod, límite de tamaño, backup y reemplazo atómico | persistir perfiles temporales o `pageState` |
+| `WorkspaceModel` | invariantes de perfiles, browsers, zonas, stacks, orden, pins, presentación, cámara y proyección persistente | conocer `WebContents` o escribir archivos |
+| `WorkspaceStore` | validación Zod, migración V1→V2, límite de tamaño, backups y reemplazo atómico | persistir perfiles Private o `pageState` |
 | `ProfileSessionManager` | derivar partición, crear/reutilizar `Session` y hacer flush | copiar cookies o almacenamiento entre perfiles |
 | `BrowserRuntime` | ciclo de vida de vistas, navegación, historial, popup, bounds y z-order | exponer contenido remoto al shell |
 | `security-policy` | webPreferences, permisos, descargas y protocolos externos | conceder permisos implícitos |
@@ -46,28 +46,28 @@ persist:omnibrowser-profile-P
 
 Todas las tarjetas de `P` reciben la misma instancia lógica de `Session`. Chromium gestiona cookies, DOM storage, IndexedDB, Cache Storage, HTTP cache y service workers dentro de esa partición. OmniBrowser no replica cada API ni serializa su contenido.
 
-Un perfil temporal incorpora un UUID de lanzamiento y omite `persist:`:
+Un perfil Private incorpora un UUID de lanzamiento y omite `persist:`:
 
 ```text
-omnibrowser-temp-<launch-id>-P
+omnibrowser-private-<launch-id>-P
 ```
 
-Ese perfil existe solo durante el proceso. `WorkspaceModel.toPersistentFile()` filtra tanto el perfil como todas sus tarjetas antes de delegar a `WorkspaceStore`.
+Ese perfil existe solo durante el proceso. `WorkspaceModel.toPersistentFile()` filtra el perfil y todos sus browsers, zonas, stacks, entradas de orden y pins antes de delegar a `WorkspaceStore`. Su historial necesario para Back/Forward vive únicamente en memoria.
 
 Al reasignar una tarjeta:
 
 1. se confirma el cambio en un diálogo nativo;
-2. se captura historial como `{ url, title }` e índice activo;
+2. se captura la navegación actual; si se cruza el límite Private/persistente se reduce a una sola entrada con la URL actual;
 3. se destruye el `WebContentsView` actual;
 4. el modelo cambia `profileId`;
 5. se crea la vista con la sesión de destino;
-6. se restaura el historial sanitizado o, si falla, la última URL permitida.
+6. se restaura el historial sanitizado cuando el tipo de sesión no cambió o, en el cruce de privacidad, sólo la URL actual.
 
 Crear una vista es síncrono e idempotente por `browserId`: la vista se adjunta, se configura y su restauración se *inicia* sin esperar a que cargue la página. Cada navegación que inicia OmniBrowser incrementa un token; el fallback de restauración solo se aplica si ninguna navegación posterior lo ha sustituido. Así, repetir `wake`, suspender durante una carga o cerrar mientras se restaura no duplica vistas ni deja promesas pendientes, y ningún flujo depende de la red para terminar.
 
 ## Canvas y vistas nativas
 
-La fuente de verdad de una tarjeta está en coordenadas world:
+La fuente de verdad de un browser está en coordenadas world:
 
 ```text
 screenX = viewportX + panX + worldX × zoom
@@ -76,22 +76,27 @@ screenW = worldW × zoom
 screenH = worldH × zoom
 ```
 
-El rectángulo Chromium de una tarjeta es su *content slot*: dentro del borde de 1 px, 38 px bajo el borde superior y 16 px del resto (`src/shared/geometry.ts`, con una prueba que compara las constantes con `styles.css` y otra anclada a la medición DOM real). React lo calcula a partir de la cámara, la medida del viewport y la geometría world, sin medir cada tarjeta en el DOM, y los bordes se redondean por arista para que dos rectángulos contiguos no deriven.
+El rectángulo Chromium de una card es su *content slot*: dentro del borde de 1 px, 38 px bajo el borde superior y 16 px del resto (`src/shared/geometry.ts`, con una prueba que compara las constantes con `styles.css` y otra anclada a la medición DOM real). React lo calcula a partir de la cámara, la medida del viewport y la geometría world, sin medir cada card en el DOM, y los bordes se redondean por arista para que dos rectángulos contiguos no deriven.
 
-Las superficies nativas se componen **por encima de todo el shell**, así que una vista solo es visible si:
+`worldRect` sigue siendo canónico para todos los modos. Minimize deriva una card compacta sin tocar tamaño; un pin de viewport deriva un rectángulo normalizado; full screen deriva bounds inmersivos y vive sólo en renderer. Al restaurar cualquiera de esos modos reaparecen la geometría y la cámara originales. Las zonas derivan su envolvente de los browsers miembros. Un stack hace que sus miembros compartan rectángulo, enseña sólo el miembro superior y los transforma como una unidad.
+
+Las superficies nativas se componen **por encima de todo el shell**. `computeCanvasLayout` produce visibilidad, bounds y una capa `normal`, `pinned` o `immersive`; `BrowserRuntime` ordena primero por capa y después por z-index. Una vista solo es visible si:
 
 - no está suspendida ni caída y el zoom es de al menos 50 %;
 - su content slot está completamente dentro del canvas (las tarjetas parcialmente fuera muestran el placeholder React);
 - no la cubre el rectángulo exterior (cabecera, borde, handles y anillo de selección) de ninguna tarjeta con mayor z;
-- no la cubre un overlay transitorio del canvas, como un aviso.
+- no la cubre un overlay transitorio del canvas, como un aviso, toolbar contextual o control inmersivo;
+- su zona no está colapsada, no está minimizada y, si pertenece a un stack, es su miembro superior.
 
 El minimapa cede: se oculta mientras una superficie visible cubre su esquina y vuelve cuando deja de estar cubierto. Una tarjeta ocluida muestra su título y dominio; al seleccionarla sube al frente y recupera el contenido vivo.
 
-El renderer envía el layout con `requestAnimationFrame`, como máximo una petición en vuelo, descarta lotes intermedios y no reenvía lotes idénticos. El proceso principal solo llama a `setBounds`/`setVisible` cuando el valor cambia y solo marca el workspace para guardar si cambia la geometría world. Durante un gesto, los snapshots que llegan de main no sobrescriben la geometría local de la tarjeta arrastrada ni la cámara en pan.
+El renderer envía el layout con `requestAnimationFrame`, como máximo una petición en vuelo, descarta lotes intermedios y no reenvía lotes idénticos. El proceso principal solo llama a `setBounds`/`setVisible` cuando el valor cambia y solo marca el workspace para guardar si cambia la geometría world. Durante un gesto, los snapshots que llegan de main preservan todos los rectángulos de la selección o stack transformado y la cámara durante pan.
 
 El orden z es propiedad del proceso principal (crear, enfocar, adoptar popups) y se mantiene denso (1..n); el renderer aplica la misma regla de forma optimista (`src/shared/z-order.ts`). El orden nativo de las vistas vivas se sincroniza con el z-order. Pulsar dentro de una página (`input-event` nativo de tipo `mouseDown`, `touchStart` o `gestureTapDown`) selecciona y eleva su tarjeta. No se usa el evento `focus` del `WebContents`: también se emite por foco programático, por la creación de vistas y por `window.focus()`, y permitiría que una página en segundo plano robase la selección.
 
-El canvas es enfocable: flechas para desplazar (Mayús para pasos largos), `+`/`-` para acercar o alejar y `0` para 100 %. Los botones de zoom escalan sobre el centro del canvas en pasos redondeados.
+El canvas es enfocable: flechas para desplazar (Mayús para pasos largos), `+`/`-` para acercar o alejar, `0` para 100 %, minimapa, rueda en fondo y Space+drag. Shift+click y Shift+drag seleccionan múltiples browsers; movimiento y escala grupal se rechazan como unidad si existe un miembro bloqueado, fijado o incompatible. El snap opcional compara bordes y centros con un umbral de 8 px de pantalla sin mover vecinos ni imponer cuadrícula.
+
+Los gestos que nacen dentro de una superficie Chromium requieren poder cancelar de forma fiable el evento antes de que la página haga scroll. El pan sobre browser inactivo y Back/Forward horizontal permanecen detrás de la compuerta de compatibilidad y no tienen toggle público hasta validar trackpads físicos Apple Silicon e Intel. No existe un historial paralelo: cuando se habilite, usará `WebContents.navigationHistory`.
 
 Por debajo de 50 %, Chromium se oculta y React representa tarjetas semánticas. Seleccionar una centra la tarjeta, cambia a 72 % y reconstruye/enseña su vista si corresponde.
 
@@ -101,6 +106,7 @@ Por debajo de 50 %, Chromium se oculta y React representa tarjetas semánticas. 
 
 - `workspace.json`: estado activo versionado;
 - `workspace.backup.json`: el último primario válido que OmniBrowser escribió o cargó, tomado de memoria y no del archivo en disco;
+- `workspace.v1-backup.json`: copia única e inmutable del V1 válido antes de la primera escritura V2;
 - `workspace[.backup].corrupt-<timestamp>-<id>.json`: primario o backup ilegible preservado sin cambios;
 - `workspace[.backup].future-v<N>-<timestamp>-<id>.json`: archivo de un esquema más reciente preservado sin cambios.
 
@@ -108,14 +114,15 @@ Primario y backup se escriben con un temporal exclusivo `0600`, `fsync`, `rename
 
 `SaveScheduler` agrupa los cambios estructurales con un debounce de 450 ms que nunca retrasa el guardado más de 2 s desde el primer cambio pendiente, de modo que la actividad continua no puede impedir que se guarde. Los cambios de bajo valor, como títulos o bounds de ventana, usan un retardo de 5 s que no pospone un guardado ya programado. Un fallo se refleja en el indicador, se registra y se reintenta con backoff hasta 30 s, sin rechazos sin manejar.
 
-Se persiste:
+El esquema V2 persiste:
 
 - perfiles persistentes;
 - tarjetas pertenecientes a esos perfiles;
 - URL y título del historial, hasta 500 entradas por tarjeta; las entradas con esquema no permitido o URL de más de 4096 caracteres se descartan al capturarlas y el índice activo se reasigna;
-- índice activo, geometría, z-order, suspensión, selección, cámara y bounds de ventana.
+- índice activo, geometría, z-order, suspensión, selección, cámara y bounds de ventana;
+- zonas/colapso, stacks, `browserOrder`, minimize, lock, pins y preferencias de snap/gestos.
 
-No se persiste `NavigationEntry.pageState`, contenido de formularios, scroll, cookies ni datos web. El almacenamiento web queda exclusivamente bajo control de Chromium.
+No se persiste `NavigationEntry.pageState`, contenido de formularios, scroll, cookies, estados de audio/carga/descarga/error, favicon cache ni datos Private. El almacenamiento web queda exclusivamente bajo control de Chromium.
 
 ## Arranque, lazy restore y cierre
 
@@ -125,7 +132,7 @@ No se persiste `NavigationEntry.pageState`, contenido de formularios, scroll, co
 4. Se carga y valida el workspace.
 5. Se crea la vista seleccionada no suspendida e inicia su carga en segundo plano; el shell carga sin esperar a la red. Un fallo de carga del frame principal se muestra como aviso (`did-fail-load`, salvo `ERR_ABORTED`).
 6. El renderer proyecta el layout; las vistas visibles restantes se crean de forma perezosa y las demás quedan como tarjetas resumidas sin `WebContents`.
-7. Salir (Cmd+Q, cierre de sesión, `SIGTERM`) y cerrar la ventana ejecutan el mismo apagado idempotente: capturar la navegación, forzar el JSON, `flushStorageData()`/`cookies.flushStore()` de las sesiones persistentes abiertas y liberar las vistas. Cada paso se ejecuta aunque falle el anterior. `before-quit` espera ese apagado y después reanuda la salida.
+7. Salir (Cmd+Q, cierre de sesión, `SIGTERM`) y cerrar la ventana ejecutan el mismo apagado idempotente: capturar la navegación, forzar el JSON, `flushStorageData()`/`cookies.flushStore()` de las sesiones persistentes abiertas, liberar las vistas —lo que cancela descargas— y limpiar storage/caché Private. Cada paso se ejecuta aunque falle el anterior. `before-quit` espera ese apagado y después reanuda la salida.
 
 ## Popups
 
@@ -133,21 +140,30 @@ No se persiste `NavigationEntry.pageState`, contenido de formularios, scroll, co
 
 Si una página se bloquea, su vista se oculta, la tarjeta muestra "La vista dejó de responder" con la acción "Recargar" y el estado se reinicia al volver a navegar.
 
+## Favicons y descargas
+
+`BrowserRuntime` escucha `page-favicon-updated` y sólo acepta URLs HTTP(S) emitidas por ese `WebContents`. `FaviconCache` recupera con la `Session` del perfil, sigue como máximo cinco redirecciones HTTP(S), acepta únicamente AVIF/GIF/JPEG/PNG/WebP/ICO (SVG queda fuera), limita cada respuesta a 256 KiB y guarda hasta 256 entradas en memoria. El shell recibe una clave SHA-256 opaca y carga `omnibrowser://app/favicon/<key>`; la CSP no se amplía a hosts remotos y la caché se destruye al cerrar.
+
+Las descargas sólo se aceptan si `will-download` puede asociar el `webContents.id` a un browser registrado de esa misma sesión. Electron conserva el diálogo nativo con `setSaveDialogOptions`; OmniBrowser nunca llama a `setSavePath`, no conoce ni persiste la ruta elegida y sólo publica progreso agregado, agrupado a intervalos de 100 ms. Cerrar el browser o la aplicación cancela sus items activos. Un archivo que el usuario ya aceptó puede permanecer en disco, también si provino de un perfil Private.
+
 ## Contrato IPC
 
 La superficie pública se limita a `bootstrap`, perfiles, navegadores, workspace y una suscripción de eventos. Todos los argumentos cruzan esquemas Zod en main. El handler rechaza cualquier sender cuyo `webContents` o frame principal no sea el shell.
 
 Cada handler responde con un resultado serializable `{ ok: true, value }` o `{ ok: false, error: { code, message } }`. Las entradas inválidas y los errores de dominio esperados (URL no permitida, navegador inexistente, nombre duplicado) llegan al shell como mensajes en español sin registrar un stack en main. Solo los errores inesperados se registran, y la UI recibe un mensaje genérico. El preload convierte los fallos en `Error` con el mensaje ya localizado.
 
-Los snapshots enviados al shell no incluyen el historial de navegación; el renderer usa `canGoBack`/`canGoForward`.
+Los snapshots enviados al shell no incluyen el historial de navegación; el renderer usa `canGoBack`/`canGoForward`. Sí incluyen el estado agregado y transitorio de audio, carga, descarga, error y una clave opaca de favicon.
 
-Los eventos son discriminados: snapshot, estado de navegador, estado de guardado y aviso. El renderer nunca elige nombres de canal ni invoca IPC genérico.
+Los avisos de navegación o restauración de un browser Private son deliberadamente genéricos: no interpolan su dominio, URL ni título.
+
+Los eventos son discriminados: snapshot, estado de browser, click nativo con modificador Shift, `Escape` nativo en superficie inmersiva, estado de guardado y aviso. El renderer nunca elige nombres de canal ni invoca IPC genérico.
 
 ## Rendimiento
 
 - `backgroundThrottling` permanece activado.
 - Los eventos de navegación, carga y título de cada página se agrupan en como máximo una captura y un evento al shell cada 250 ms.
 - Un cambio de título no provoca layout, `setBounds` ni `setVisible`.
+- El árbol del sidebar preindexa browsers por perfil/zona/stack y resuelve miembros por `Map`, evitando filtros anidados; búsqueda y derivación se ejercitan con 500 browsers.
 - Los bundles de producción se minifican y no incluyen source maps.
 - Ocultar una vista usa `setVisible(false)` sin destruirla.
 - Suspender destruye el `WebContents`, mantiene modelo/historial y lo recrea a demanda.

@@ -166,6 +166,13 @@ async function submitUrl(shell: Page, url: string): Promise<void> {
   await input.evaluate((element) => (element as HTMLInputElement).form!.requestSubmit());
 }
 
+async function openBrowserMenu(shell: Page, browserId: string) {
+  const menu = shell.locator(`[data-browser-id="${browserId}"] .card-menu`);
+  if (await menu.getAttribute('open') === null) await menu.locator('summary').click();
+  await expect(menu.locator('.card-menu-popover')).toBeVisible();
+  return menu;
+}
+
 async function remoteEval<T>(app: ElectronApplication, urlFragment: string, source: string): Promise<T> {
   return app.evaluate(async ({ webContents }, { fragment, code }) => {
     const target = webContents.getAllWebContents().find((contents) => contents.getURL().includes(fragment));
@@ -241,7 +248,7 @@ test('native views stay aligned with their cards through pan, wheel, drag and re
 });
 
 test('Chromium surfaces never cover a higher card, the minimap or a visible notice', async () => {
-  const launched = await launchApp(newUserData(seededWorkspace([{ x: 40, y: 40 }, { x: 140, y: 110 }, { x: 700, y: 400 }], { selectedIndex: 1 })));
+  const launched = await launchApp(newUserData(seededWorkspace([{ x: 40, y: 40 }, { x: 140, y: 110 }, { x: 650, y: 400 }], { selectedIndex: 1 })));
   const state = await snapshot(launched.shell);
   const [lower, upper, corner] = state.browsers;
   await expect.poll(async () => (await nativeViews(launched.app)).filter((view) => view.visible).length).toBe(2);
@@ -417,7 +424,7 @@ test('a crashed page is hidden and can be recovered from its card', async () => 
   const card = launched.shell.locator('.browser-card').first();
   await expect(card.getByText('La vista dejó de responder')).toBeVisible();
   await expect.poll(async () => (await nativeViews(launched.app)).some((view) => view.visible)).toBe(false);
-  await card.getByRole('button', { name: 'Recargar' }).click();
+  await card.locator('.browser-placeholder').getByRole('button', { name: 'Recargar' }).click();
   await expect.poll(async () => (await snapshot(launched.shell)).browsers[0]?.runtime.crashed).toBe(false);
   await expect.poll(async () => (await nativeViews(launched.app)).some((view) => view.visible && view.url.includes('/one'))).toBe(true);
   await closeApp(launched);
@@ -546,6 +553,226 @@ test('the canvas can be panned and zoomed from the keyboard', async () => {
   await canvas.press('0');
   await expect.poll(async () => (await snapshot(launched.shell)).camera.zoom).toBe(1);
   await expectNativeViewsAligned(launched, 1);
+  await closeApp(launched);
+});
+
+test('fullscreen, minimize, lock, viewport pin and duplicate preserve canonical world geometry', async () => {
+  const launched = await launchApp(newUserData(seededWorkspace([{ x: 80, y: 70, url: `${origin}/one` }])));
+  const initial = await snapshot(launched.shell);
+  const browser = initial.browsers[0]!;
+  const originalRect = browser.worldRect;
+  const originalCamera = initial.camera;
+
+  await (await openBrowserMenu(launched.shell, browser.id)).getByRole('button', { name: 'Pantalla completa' }).click();
+  await expect(launched.shell.locator('.app-shell')).toHaveClass(/is-immersive/);
+  await expect(launched.shell.locator('.profile-rail')).toBeHidden();
+  await expect(launched.shell.locator(`[data-browser-id="${browser.id}"]`)).toHaveClass(/surface-immersive/);
+  await expectNativeViewsAligned(launched, 1);
+  expect((await snapshot(launched.shell)).browsers[0]!.worldRect).toEqual(originalRect);
+  expect((await snapshot(launched.shell)).camera).toEqual(originalCamera);
+
+  await launched.app.evaluate(({ webContents }) => {
+    const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL().includes('/one'));
+    if (!contents) throw new Error('Missing immersive WebContents.');
+    contents.focus();
+    contents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
+    contents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' });
+  });
+  await expect(launched.shell.locator('.app-shell')).not.toHaveClass(/is-immersive/);
+  await expect(launched.shell.locator('.profile-rail')).toBeVisible();
+  expect((await snapshot(launched.shell)).browsers[0]!.worldRect).toEqual(originalRect);
+
+  await (await openBrowserMenu(launched.shell, browser.id)).getByRole('button', { name: 'Minimizar' }).click();
+  await expect.poll(async () => (await snapshot(launched.shell)).browsers[0]?.presentation).toBe('minimized');
+  await expect(launched.shell.locator(`[data-browser-id="${browser.id}"]`)).toHaveClass(/minimized-browser-card/);
+  await expect.poll(async () => (await nativeViews(launched.app)).filter((view) => view.visible).length).toBe(0);
+  expect((await snapshot(launched.shell)).browsers[0]!.worldRect).toEqual(originalRect);
+  await launched.shell.getByRole('button', { name: 'Restaurar navegador' }).click();
+  await expect.poll(async () => (await snapshot(launched.shell)).browsers[0]?.presentation).toBe('normal');
+  await expectNativeViewsAligned(launched, 1);
+
+  await (await openBrowserMenu(launched.shell, browser.id)).getByRole('button', { name: 'Bloquear posición' }).click();
+  await expect.poll(async () => (await snapshot(launched.shell)).browsers[0]?.positionLocked).toBe(true);
+  await expect(launched.shell.locator(`[data-browser-id="${browser.id}"] .resize-handle`)).toHaveCount(0);
+  const lockedHeader = (await launched.shell.locator(`[data-browser-id="${browser.id}"] .browser-card-header`).boundingBox())!;
+  await dispatchDrag(launched.shell, `[data-browser-id="${browser.id}"] .browser-card-header`, { x: lockedHeader.x + 80, y: lockedHeader.y + 18 }, { x: 90, y: 60 });
+  expect((await snapshot(launched.shell)).browsers[0]!.worldRect).toEqual(originalRect);
+  await (await openBrowserMenu(launched.shell, browser.id)).getByRole('button', { name: 'Desbloquear' }).click();
+
+  await (await openBrowserMenu(launched.shell, browser.id)).getByRole('button', { name: 'Fijar al viewport' }).click();
+  await expect.poll(async () => (await snapshot(launched.shell)).browsers[0]?.pin.viewport).not.toBeNull();
+  await expect(launched.shell.locator(`[data-browser-id="${browser.id}"]`)).toHaveClass(/surface-pinned/);
+  const pinnedBefore = (await launched.shell.locator(`[data-browser-id="${browser.id}"]`).boundingBox())!;
+  await launched.shell.locator('.canvas-viewport').dispatchEvent('wheel', { deltaX: 140, deltaY: 90 });
+  const pinnedAfter = (await launched.shell.locator(`[data-browser-id="${browser.id}"]`).boundingBox())!;
+  expect(pinnedAfter).toEqual(pinnedBefore);
+  expect((await snapshot(launched.shell)).browsers[0]!.worldRect).toEqual(originalRect);
+  await (await openBrowserMenu(launched.shell, browser.id)).getByRole('button', { name: 'Desanclar del viewport' }).click();
+  await expect.poll(async () => (await snapshot(launched.shell)).browsers[0]?.pin.viewport).toBeNull();
+
+  await (await openBrowserMenu(launched.shell, browser.id)).getByRole('button', { name: 'Duplicar' }).click();
+  await expect.poll(async () => (await snapshot(launched.shell)).browsers.length).toBe(2);
+  const duplicated = (await snapshot(launched.shell)).browsers.find((candidate) => candidate.id !== browser.id)!;
+  expect(duplicated).toMatchObject({
+    profileId: browser.profileId,
+    presentation: 'normal',
+    positionLocked: false,
+    pin: { sidebar: false, viewport: null }
+  });
+  expect(duplicated.worldRect).toEqual({ ...originalRect, x: originalRect.x + 32, y: originalRect.y + 24 });
+  expect(mainProcessNoise(launched.output)).toEqual([]);
+  await closeApp(launched);
+});
+
+test('zones collapse native views and stacks expose only their selected top member', async () => {
+  const launched = await launchApp(newUserData(seededWorkspace([
+    { x: 40, y: 40, url: `${origin}/one` },
+    { x: 600, y: 40, url: `${origin}/two` }
+  ])));
+  const initial = await snapshot(launched.shell);
+  const ids = initial.browsers.map((browser) => browser.id);
+  const profileId = initial.profiles.find((profile) => profile.kind === 'persistent')!.id;
+  await launched.shell.evaluate(({ targetProfileId, browserIds }) => window.omniBrowser.workspace.createZone(targetProfileId, 'Research', '#336699', browserIds), { targetProfileId: profileId, browserIds: ids });
+  await expect.poll(async () => (await snapshot(launched.shell)).zones[0]?.name).toBe('Research');
+  await expect(launched.shell.locator('.zone-frame')).toBeVisible();
+  await expect(launched.shell.locator('.zone-name-button', { hasText: 'Research' })).toBeVisible();
+  await expectNativeViewsAligned(launched, 2);
+
+  await launched.shell.locator('.zone-name-button', { hasText: 'Research' }).click();
+  await expect.poll(async () => (await snapshot(launched.shell)).zones[0]?.collapsed).toBe(true);
+  await expect(launched.shell.locator('.collapsed-zone-chip')).toContainText('2');
+  await expect(launched.shell.locator('.browser-card')).toHaveCount(0);
+  await expect.poll(async () => (await nativeViews(launched.app)).filter((view) => view.visible).length).toBe(0);
+  await launched.shell.locator(`[data-minimap-browser="${ids[0]}"]`).click();
+  await expect.poll(async () => (await snapshot(launched.shell)).zones[0]?.collapsed).toBe(false);
+  await expect(launched.shell.locator('.browser-card')).toHaveCount(2);
+  await expect.poll(async () => (await snapshot(launched.shell)).selectedBrowserId).toBe(ids[0]);
+  await expect.poll(async () => (await snapshot(launched.shell)).camera.zoom).toBeGreaterThanOrEqual(0.5);
+
+  const zoneId = (await snapshot(launched.shell)).zones[0]!.id;
+  await launched.shell.evaluate(({ targetZoneId, browserIds }) => window.omniBrowser.workspace.createStack(targetZoneId, browserIds), { targetZoneId: zoneId, browserIds: ids });
+  await expect.poll(async () => (await snapshot(launched.shell)).stacks).toHaveLength(1);
+  await expect(launched.shell.locator('.browser-card')).toHaveCount(1);
+  await expect(launched.shell.locator('.stack-switcher')).toContainText('2');
+  await expect.poll(async () => (await nativeViews(launched.app)).filter((view) => view.visible).length).toBe(1);
+
+  const stack = (await snapshot(launched.shell)).stacks[0]!;
+  await launched.shell.evaluate(({ stackId, browserId }) => window.omniBrowser.workspace.selectStackMember(stackId, browserId), { stackId: stack.id, browserId: ids[0]! });
+  await expect.poll(async () => (await snapshot(launched.shell)).stacks[0]?.browserIds.at(-1)).toBe(ids[0]);
+  await expect(launched.shell.locator(`[data-browser-id="${ids[0]}"]`)).toBeVisible();
+  await expect(launched.shell.locator(`.sidebar-browser-row.is-selected[data-drop-id="${ids[0]}"]`)).toBeVisible();
+  await launched.shell.evaluate((stackId) => window.omniBrowser.workspace.unstack(stackId), stack.id);
+  await expect.poll(async () => (await snapshot(launched.shell)).stacks).toHaveLength(0);
+  await expect(launched.shell.locator('.browser-card')).toHaveCount(2);
+  await expect.poll(async () => {
+    const unstacked = (await snapshot(launched.shell)).browsers;
+    return new Set(unstacked.map((browser) => `${browser.worldRect.x}:${browser.worldRect.y}`)).size;
+  }).toBe(2);
+  expect(mainProcessNoise(launched.output)).toEqual([]);
+  await closeApp(launched);
+});
+
+test('sidebar search, pin, drag reorder, locate and hover close stay synchronized with the canvas', async () => {
+  const launched = await launchApp(newUserData(seededWorkspace([
+    { x: 40, y: 40, url: `${origin}/one` },
+    { x: 5000, y: 4000, url: `${origin}/two` }
+  ], { selectedIndex: 0 })));
+  const initial = await snapshot(launched.shell);
+  const [first, second] = initial.browsers;
+  const normalRow = (id: string) => launched.shell.locator(`.profile-tree-section .sidebar-browser-row[data-drop-id="${id}"]`);
+  await expect(normalRow(first!.id)).toBeVisible();
+  await expect(normalRow(second!.id)).toBeVisible();
+
+  const firstBox = (await normalRow(first!.id).boundingBox())!;
+  const secondBox = (await normalRow(second!.id).boundingBox())!;
+  await launched.shell.mouse.move(secondBox.x + 40, secondBox.y + secondBox.height / 2);
+  await launched.shell.mouse.down();
+  await launched.shell.mouse.move(firstBox.x + 40, firstBox.y + firstBox.height / 2, { steps: 5 });
+  await launched.shell.mouse.up();
+  await expect.poll(async () => (await snapshot(launched.shell)).browserOrder).toEqual([second!.id, first!.id]);
+
+  await normalRow(first!.id).hover();
+  await normalRow(first!.id).getByRole('button', { name: 'Fijar', exact: true }).click();
+  await expect.poll(async () => (await snapshot(launched.shell)).browsers.find((browser) => browser.id === first!.id)?.pin.sidebar).toBe(true);
+  await expect(launched.shell.locator('.pinned-section .sidebar-browser-row')).toHaveCount(1);
+
+  const search = launched.shell.getByRole('textbox', { name: 'Buscar navegadores abiertos' });
+  await search.fill('two');
+  await expect(launched.shell.locator('.profile-tree .sidebar-browser-row')).toHaveCount(1);
+  await search.fill('');
+
+  const cameraBefore = (await snapshot(launched.shell)).camera;
+  await launched.shell.waitForTimeout(300);
+  await normalRow(second!.id).click();
+  await expect.poll(async () => (await snapshot(launched.shell)).selectedBrowserId).toBe(second!.id);
+  await expect.poll(async () => (await snapshot(launched.shell)).camera.panX).not.toBe(cameraBefore.panX);
+  const located = (await launched.shell.locator(`[data-browser-id="${second!.id}"]`).boundingBox())!;
+  const canvas = (await launched.shell.locator('.canvas-viewport').boundingBox())!;
+  expect(located.x).toBeGreaterThanOrEqual(canvas.x);
+  expect(located.x + located.width).toBeLessThanOrEqual(canvas.x + canvas.width);
+
+  await normalRow(second!.id).hover();
+  await normalRow(second!.id).locator('.sidebar-close-button').click();
+  await expect.poll(async () => (await snapshot(launched.shell)).browsers.map((browser) => browser.id)).not.toContain(second!.id);
+  await expect(normalRow(second!.id)).toHaveCount(0);
+  expect(mainProcessNoise(launched.output)).toEqual([]);
+  await closeApp(launched);
+});
+
+test('shift-click multi-select moves and locks the selected group atomically', async () => {
+  const launched = await launchApp(newUserData(seededWorkspace([
+    { x: 40, y: 40, url: `${origin}/one` },
+    { x: 600, y: 40, url: `${origin}/two` }
+  ], { selectedIndex: 1 })));
+  const initial = await snapshot(launched.shell);
+  const [first, second] = initial.browsers;
+  await expect(launched.shell.locator(`[data-browser-id="${first!.id}"] .inactive-domain`)).toBeVisible();
+  await expect(launched.shell.locator(`[data-browser-id="${first!.id}"] input[aria-label="URL"]`)).toHaveCount(0);
+  await expect(launched.shell.locator(`[data-browser-id="${second!.id}"] input[aria-label="URL"]`)).toBeVisible();
+  await launched.shell.locator(`[data-browser-id="${first!.id}"] .browser-card-header`).click({ modifiers: ['Shift'] });
+  await expect(launched.shell.locator('.selection-toolbar')).toContainText('2 seleccionados');
+  const before = new Map((await snapshot(launched.shell)).browsers.map((browser) => [browser.id, browser.worldRect]));
+  const header = (await launched.shell.locator(`[data-browser-id="${first!.id}"] .browser-card-header`).boundingBox())!;
+  await dispatchDrag(launched.shell, `[data-browser-id="${first!.id}"] .browser-card-header`, { x: header.x + 120, y: header.y + 18 }, { x: 48, y: 36 });
+  await expect.poll(async () => (await snapshot(launched.shell)).browsers.find((browser) => browser.id === first!.id)?.worldRect.x).toBeGreaterThan(before.get(first!.id)!.x + 20);
+  const moved = new Map((await snapshot(launched.shell)).browsers.map((browser) => [browser.id, browser.worldRect]));
+  expect(moved.get(first!.id)!.x - before.get(first!.id)!.x).toBeCloseTo(moved.get(second!.id)!.x - before.get(second!.id)!.x, 4);
+  expect(moved.get(first!.id)!.y - before.get(first!.id)!.y).toBeCloseTo(moved.get(second!.id)!.y - before.get(second!.id)!.y, 4);
+
+  await launched.shell.locator('.selection-toolbar').getByRole('button', { name: 'Posición' }).click();
+  await expect.poll(async () => (await snapshot(launched.shell)).browsers.every((browser) => browser.positionLocked)).toBe(true);
+  const lockedBefore = new Map((await snapshot(launched.shell)).browsers.map((browser) => [browser.id, browser.worldRect]));
+  const lockedHeader = (await launched.shell.locator(`[data-browser-id="${first!.id}"] .browser-card-header`).boundingBox())!;
+  await dispatchDrag(launched.shell, `[data-browser-id="${first!.id}"] .browser-card-header`, { x: lockedHeader.x + 100, y: lockedHeader.y + 18 }, { x: 80, y: 50 });
+  const lockedAfter = new Map((await snapshot(launched.shell)).browsers.map((browser) => [browser.id, browser.worldRect]));
+  expect(lockedAfter).toEqual(lockedBefore);
+  await launched.shell.locator('.selection-toolbar').getByRole('button', { name: 'Posición' }).click();
+  await expect.poll(async () => (await snapshot(launched.shell)).browsers.every((browser) => !browser.positionLocked)).toBe(true);
+  await launched.shell.locator('.canvas-viewport').click({ position: { x: 500, y: 700 } });
+  await expect.poll(async () => (await snapshot(launched.shell)).selectedBrowserId).toBeNull();
+  await expect(launched.shell.locator('.browser-card.is-active')).toHaveCount(0);
+  expect(mainProcessNoise(launched.output)).toEqual([]);
+  await closeApp(launched);
+});
+
+test('private navigation failures never place a domain, URL or title in shell error notices', async () => {
+  const launched = await launchApp(newUserData());
+  await launched.shell.getByRole('button', { name: 'Perfil', exact: true }).click();
+  await launched.shell.getByPlaceholder('Nombre').fill('Ephemeral QA');
+  await launched.shell.getByRole('button', { name: 'Private', exact: true }).click();
+  await launched.shell.getByRole('button', { name: 'Crear perfil' }).click();
+  await launched.shell.getByRole('button', { name: 'Abrir navegador' }).click();
+  const afterCreate = await snapshot(launched.shell);
+  const privateProfile = afterCreate.profiles.find((profile) => profile.name === 'Ephemeral QA');
+  const privateBrowser = afterCreate.browsers.find((browser) => browser.profileId === privateProfile?.id);
+  expect(privateBrowser).toBeDefined();
+
+  await submitUrl(launched.shell, 'http://127.0.0.1:1/private-secret-token');
+  const notice = launched.shell.locator('.notice-toast');
+  await expect(notice).toContainText('No se pudo cargar una página en un browser Private.');
+  await expect(notice).not.toContainText('127.0.0.1');
+  await expect(notice).not.toContainText('private-secret-token');
+  expect(mainProcessNoise(launched.output)).toEqual([]);
   await closeApp(launched);
 });
 

@@ -2,12 +2,28 @@ import { app, BrowserWindow, dialog } from 'electron';
 import {
   assignProfileInputSchema,
   browserIdInputSchema,
+  browserIdsInputSchema,
   cameraInputSchema,
+  createStackInputSchema,
   createBrowserInputSchema,
   createProfileInputSchema,
+  createZoneInputSchema,
   focusInputSchema,
   layoutBatchSchema,
   navigateInputSchema,
+  selectStackMemberInputSchema,
+  setBrowserOrderInputSchema,
+  setPositionLockedInputSchema,
+  setPreferencesInputSchema,
+  setPresentationInputSchema,
+  setSidebarPinnedInputSchema,
+  setViewportPinInputSchema,
+  setZoneCollapsedInputSchema,
+  stackIdInputSchema,
+  updateZoneInputSchema,
+  assignZoneInputSchema,
+  addStackMemberInputSchema,
+  zoneIdInputSchema,
   type ProfileRecord,
   type WorkspaceSnapshot
 } from '../shared/schemas';
@@ -66,6 +82,8 @@ export class OmniBrowserController {
       onExternalUrl: (url, sourceContentsId) => {
         void confirmAndOpenExternal(this.window, url, sourceContentsId, this.#externalOpenGate, (message) => this.#notice('warning', message));
       },
+      onNativeBrowserClick: (browserId, shiftKey) => this.#emit({ type: 'native-browser-click', browserId, shiftKey }),
+      onNativeBrowserEscape: (browserId) => this.#emit({ type: 'native-browser-escape', browserId }),
       onContentsDestroyed: (contentsId) => this.#externalOpenGate.forget(contentsId)
     });
   }
@@ -106,9 +124,9 @@ export class OmniBrowserController {
     return this.snapshot();
   }
 
-  createTemporaryProfile(input: unknown): WorkspaceSnapshot {
+  createPrivateProfile(input: unknown): WorkspaceSnapshot {
     const { name } = parseInput(createProfileInputSchema, input);
-    this.#model.createProfile(name, 'temporary');
+    this.#model.createProfile(name, 'private');
     this.#changed();
     return this.snapshot();
   }
@@ -122,6 +140,40 @@ export class OmniBrowserController {
   closeBrowser(input: unknown): WorkspaceSnapshot {
     const { browserId } = parseInput(browserIdInputSchema, input);
     this.#runtime.closeBrowser(browserId);
+    return this.snapshot();
+  }
+
+  duplicateBrowsers(input: unknown): WorkspaceSnapshot {
+    const { browserIds } = parseInput(browserIdsInputSchema, input);
+    this.#runtime.duplicateBrowsers(browserIds);
+    return this.snapshot();
+  }
+
+  setPresentation(input: unknown): WorkspaceSnapshot {
+    const { browserIds, presentation } = parseInput(setPresentationInputSchema, input);
+    this.#model.setPresentation(browserIds, presentation);
+    this.#changed();
+    return this.snapshot();
+  }
+
+  setPositionLocked(input: unknown): WorkspaceSnapshot {
+    const { browserIds, locked } = parseInput(setPositionLockedInputSchema, input);
+    this.#model.setPositionLocked(browserIds, locked);
+    this.#changed();
+    return this.snapshot();
+  }
+
+  setSidebarPinned(input: unknown): WorkspaceSnapshot {
+    const { browserIds, pinned } = parseInput(setSidebarPinnedInputSchema, input);
+    this.#model.setSidebarPinned(browserIds, pinned);
+    this.#changed();
+    return this.snapshot();
+  }
+
+  setViewportPin(input: unknown): WorkspaceSnapshot {
+    const { browserId, viewport } = parseInput(setViewportPinInputSchema, input);
+    this.#model.setViewportPin(browserId, viewport);
+    this.#changed();
     return this.snapshot();
   }
 
@@ -139,7 +191,9 @@ export class OmniBrowserController {
       noLink: true,
       title: 'Cambiar sesión del navegador',
       message: `Cambiar de “${from.name}” a “${to.name}” recreará esta vista.`,
-      detail: 'El historial y la URL se conservarán, pero se perderá el estado no guardado de la página (formularios, desplazamiento) y la vista usará inmediatamente las cookies y el almacenamiento del perfil de destino.'
+      detail: from.kind === to.kind
+        ? 'El historial y la URL se conservarán, pero se perderá el estado no guardado de la página y la vista usará inmediatamente la sesión del perfil de destino.'
+        : 'Al cruzar el límite Private/Persistent sólo se conservará la URL actual. El historial, las cookies, el almacenamiento, los formularios y el desplazamiento no se transferirán.'
     });
     if (confirmation.response === 1) this.#runtime.assignProfile(browserId, profileId);
     return this.snapshot();
@@ -165,6 +219,11 @@ export class OmniBrowserController {
     this.#runtime.reload(browserId);
   }
 
+  stop(input: unknown): void {
+    const { browserId } = parseInput(browserIdInputSchema, input);
+    this.#runtime.stop(browserId);
+  }
+
   focus(input: unknown): WorkspaceSnapshot {
     const { browserId, focusContents } = parseInput(focusInputSchema, input);
     this.#runtime.focus(browserId, { focusContents });
@@ -180,6 +239,88 @@ export class OmniBrowserController {
   wake(input: unknown): WorkspaceSnapshot {
     const { browserId } = parseInput(browserIdInputSchema, input);
     this.#runtime.wake(browserId);
+    return this.snapshot();
+  }
+
+  clearFocus(): WorkspaceSnapshot {
+    if (this.#model.clearFocus()) this.#changed();
+    return this.snapshot();
+  }
+
+  createZone(input: unknown): WorkspaceSnapshot {
+    const { profileId, name, color, browserIds } = parseInput(createZoneInputSchema, input);
+    this.#model.createZone(profileId, name, color, browserIds);
+    this.#changed();
+    return this.snapshot();
+  }
+
+  updateZone(input: unknown): WorkspaceSnapshot {
+    const { zoneId, name, color } = parseInput(updateZoneInputSchema, input);
+    this.#model.updateZone(zoneId, { name, color });
+    this.#changed();
+    return this.snapshot();
+  }
+
+  setZoneCollapsed(input: unknown): WorkspaceSnapshot {
+    const { zoneId, collapsed } = parseInput(setZoneCollapsedInputSchema, input);
+    this.#model.setZoneCollapsed(zoneId, collapsed);
+    this.#changed();
+    return this.snapshot();
+  }
+
+  deleteZone(input: unknown): WorkspaceSnapshot {
+    const { zoneId } = parseInput(zoneIdInputSchema, input);
+    this.#model.deleteZone(zoneId);
+    this.#changed();
+    return this.snapshot();
+  }
+
+  assignZone(input: unknown): WorkspaceSnapshot {
+    const { browserIds, zoneId } = parseInput(assignZoneInputSchema, input);
+    this.#model.assignZone(browserIds, zoneId);
+    this.#changed();
+    return this.snapshot();
+  }
+
+  createStack(input: unknown): WorkspaceSnapshot {
+    const { zoneId, browserIds } = parseInput(createStackInputSchema, input);
+    this.#model.createStack(zoneId, browserIds);
+    this.#changed();
+    return this.snapshot();
+  }
+
+  addStackMember(input: unknown): WorkspaceSnapshot {
+    const { stackId, browserId } = parseInput(addStackMemberInputSchema, input);
+    this.#model.addStackMember(stackId, browserId);
+    this.#changed();
+    return this.snapshot();
+  }
+
+  selectStackMember(input: unknown): WorkspaceSnapshot {
+    const { stackId, browserId } = parseInput(selectStackMemberInputSchema, input);
+    this.#model.selectStackMember(stackId, browserId);
+    this.#changed();
+    return this.snapshot();
+  }
+
+  unstack(input: unknown): WorkspaceSnapshot {
+    const { stackId } = parseInput(stackIdInputSchema, input);
+    this.#model.unstack(stackId);
+    this.#changed();
+    return this.snapshot();
+  }
+
+  setBrowserOrder(input: unknown): WorkspaceSnapshot {
+    const { browserOrder } = parseInput(setBrowserOrderInputSchema, input);
+    this.#model.setBrowserOrder(browserOrder);
+    this.#changed();
+    return this.snapshot();
+  }
+
+  setPreferences(input: unknown): WorkspaceSnapshot {
+    const update = parseInput(setPreferencesInputSchema, input);
+    this.#model.setPreferences(update);
+    this.#changed();
     return this.snapshot();
   }
 
@@ -216,7 +357,8 @@ export class OmniBrowserController {
         await this.#saveScheduler.flush();
       }],
       ['vaciar el almacenamiento de los perfiles', () => this.#sessions.flushPersistent(this.#model.listProfiles())],
-      ['liberar las vistas', () => this.#runtime.dispose()]
+      ['liberar las vistas', () => this.#runtime.dispose()],
+      ['limpiar las sesiones privadas', () => this.#sessions.clearPrivate(this.#model.listProfiles())]
     ];
     for (const [label, step] of steps) {
       try {

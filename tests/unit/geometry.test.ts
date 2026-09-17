@@ -8,22 +8,26 @@ import {
   MAX_SCREEN_COORDINATE,
   MINIMAP_MARGIN,
   MINIMAP_SIZE,
+  PROFILE_RAIL_WIDTH,
   ZOOM_STEP
 } from '../../src/shared/constants';
 import {
   clampCamera,
   clampWorldRect,
+  boundsForWorldRects,
   computeCanvasLayout,
   projectWorldRect,
   roundZoom,
   screenDeltaToWorld,
   screenToWorld,
+  snapMovedWorldRect,
+  snapResizedWorldRect,
   shouldShowNativeView,
   zoomAroundPoint,
   type CanvasCard
 } from '../../src/shared/geometry';
 
-const viewport = { x: 218, y: 60, width: 1222, height: 812 };
+const viewport = { x: PROFILE_RAIL_WIDTH, y: 60, width: 1440 - PROFILE_RAIL_WIDTH, height: 812 };
 
 function card(id: string, zIndex: number, worldRect: CanvasCard['worldRect'], overrides: Partial<CanvasCard> = {}): CanvasCard {
   return { id, zIndex, worldRect, suspended: false, crashed: false, ...overrides };
@@ -36,14 +40,14 @@ describe('canvas geometry', () => {
     expect(projectWorldRect(
       { x: 100, y: 50, width: 400, height: 300 },
       { panX: 20, panY: -10, zoom: 0.5 },
-      { x: 218, y: 60 }
-    )).toEqual({ x: 297, y: 95, width: 183, height: 122 });
+      { x: PROFILE_RAIL_WIDTH, y: 60 }
+    )).toEqual({ x: 359, y: 95, width: 183, height: 122 });
   });
 
   it('matches the native bounds measured from the rendered DOM of the default card', () => {
     // Measured in the production shell at 1440×900: [data-browser-content] and the WebContentsView were (291,151,497×315).
-    expect(projectWorldRect({ x: 72, y: 72, width: 640, height: 440 }, { panX: 0, panY: 0, zoom: 0.82 }, { x: 218, y: 60 }))
-      .toEqual({ x: 291, y: 151, width: 497, height: 315 });
+    expect(projectWorldRect({ x: 72, y: 72, width: 640, height: 440 }, { panX: 0, panY: 0, zoom: 0.82 }, { x: PROFILE_RAIL_WIDTH, y: 60 }))
+      .toEqual({ x: 353, y: 151, width: 497, height: 315 });
   });
 
   it('keeps geometry constants in sync with the stylesheet that draws the cards', () => {
@@ -61,7 +65,7 @@ describe('canvas geometry', () => {
 
   it('maps a screen point to the same world point used to project it', () => {
     const camera = { panX: -35, panY: 12, zoom: 1.3 };
-    const origin = { x: 218, y: 60 };
+    const origin = { x: PROFILE_RAIL_WIDTH, y: 60 };
     const world = { x: 412, y: -97 };
     const screen = { x: origin.x + camera.panX + world.x * camera.zoom, y: origin.y + camera.panY + world.y * camera.zoom };
     const back = screenToWorld(screen, camera, origin);
@@ -79,7 +83,7 @@ describe('canvas geometry', () => {
   });
 
   it('hides native views at semantic zoom, when suspended, or when partially outside the canvas', () => {
-    const canvas = { x: 218, y: 60, width: 1000, height: 700 };
+    const canvas = { x: PROFILE_RAIL_WIDTH, y: 60, width: 1000, height: 700 };
     const inside = { x: 300, y: 100, width: 500, height: 400 };
     expect(shouldShowNativeView(0.8, inside, canvas, false)).toBe(true);
     expect(shouldShowNativeView(0.49, inside, canvas, false)).toBe(false);
@@ -99,6 +103,27 @@ describe('canvas geometry', () => {
   it('clamps cameras and rectangles to the persisted schema and repairs NaN', () => {
     expect(clampCamera({ panX: Number.NaN, panY: 5e9, zoom: 0 })).toEqual({ panX: 0, panY: 1_000_000, zoom: 0.25 });
     expect(clampWorldRect({ x: -5e9, y: Number.NaN, width: 10, height: Number.POSITIVE_INFINITY })).toEqual({ x: -1_000_000, y: 0, width: 320, height: 240 });
+  });
+
+  it('derives padded group bounds and softly snaps edges and centers in screen-pixel distance', () => {
+    expect(boundsForWorldRects([
+      { x: 20, y: 30, width: 100, height: 80 },
+      { x: 180, y: 10, width: 60, height: 200 }
+    ], 10)).toEqual({ x: 10, y: 0, width: 240, height: 220 });
+
+    const target = { x: 500, y: 100, width: 200, height: 200 };
+    expect(snapMovedWorldRect({ x: 393, y: 96, width: 100, height: 100 }, [target], 1)).toEqual({
+      rect: { x: 400, y: 100, width: 100, height: 100 },
+      guides: [
+        { axis: 'x', worldPosition: 500 },
+        { axis: 'y', worldPosition: 100 }
+      ]
+    });
+    expect(snapMovedWorldRect({ x: 393, y: 96, width: 100, height: 100 }, [target], 2).rect.x).toBe(393);
+    expect(snapResizedWorldRect({ x: 0, y: 100, width: 493, height: 240 }, 'e', [target], 1)).toMatchObject({
+      rect: { x: 0, y: 100, width: 500, height: 240 },
+      guides: [{ axis: 'x', worldPosition: 500 }]
+    });
   });
 });
 
@@ -120,7 +145,7 @@ describe('native view layout', () => {
   });
 
   it('treats a visible notice as an occluder and reports when a surface covers the minimap', () => {
-    const cornerCard = card('corner', 1, { x: 700, y: 400, width: 500, height: 400 });
+    const cornerCard = card('corner', 1, { x: 650, y: 400, width: 500, height: 400 });
     const plain = computeCanvasLayout([cornerCard], camera, viewport);
     expect(plain.items[0]?.visible).toBe(true);
     expect(plain.minimapCovered).toBe(true);
@@ -142,5 +167,45 @@ describe('native view layout', () => {
     expect(layout.items[0]?.visible).toBe(false);
     expect(Math.abs(bounds.x)).toBeLessThanOrEqual(MAX_SCREEN_COORDINATE);
     expect(Math.abs(bounds.y)).toBeLessThanOrEqual(MAX_SCREEN_COORDINATE);
+  });
+
+  it('orders direct pinned and immersive surfaces above world cards regardless of z-index', () => {
+    const normal = card('normal', 100, { x: 40, y: 40, width: 640, height: 440 });
+    const pinned = card('pinned', 1, { x: 900, y: 900, width: 640, height: 440 }, {
+      surfaceLayer: 'pinned',
+      screenContentBounds: { x: 340, y: 120, width: 420, height: 300 },
+      screenChromeBounds: { x: 320, y: 80, width: 460, height: 360 }
+    });
+    const withPin = computeCanvasLayout([normal, pinned], camera, viewport);
+    expect(withPin.items.find((item) => item.browserId === 'normal')?.visible).toBe(false);
+    expect(withPin.items.find((item) => item.browserId === 'pinned')).toMatchObject({
+      visible: true,
+      surfaceLayer: 'pinned',
+      screenBounds: { x: 340, y: 120, width: 420, height: 300 }
+    });
+
+    const immersive = card('immersive', 0, { x: 0, y: 0, width: 640, height: 440 }, {
+      surfaceLayer: 'immersive',
+      screenContentBounds: { x: 300, y: 100, width: 900, height: 650 },
+      screenChromeBounds: { x: 280, y: 60, width: 1160, height: 812 }
+    });
+    const full = computeCanvasLayout([pinned, immersive], camera, viewport);
+    expect(full.items.find((item) => item.browserId === 'pinned')?.visible).toBe(false);
+    expect(full.items.find((item) => item.browserId === 'immersive')?.visible).toBe(true);
+  });
+
+  it('hides minimized or collapsed native surfaces through the explicit nativeHidden flag', () => {
+    const hidden = card('hidden', 1, { x: 40, y: 40, width: 640, height: 440 }, { nativeHidden: true });
+    expect(computeCanvasLayout([hidden], camera, viewport).items[0]?.visible).toBe(false);
+  });
+
+  it('does not let chrome from a collapsed zone or hidden stack member occlude a visible surface', () => {
+    const worldRect = { x: 40, y: 40, width: 500, height: 360 };
+    const layout = computeCanvasLayout([
+      card('visible', 1, worldRect),
+      card('collapsed', 2, worldRect, { nativeHidden: true, chromeHidden: true })
+    ], camera, viewport);
+    expect(layout.items.find((item) => item.browserId === 'visible')?.visible).toBe(true);
+    expect(layout.items.find((item) => item.browserId === 'collapsed')?.visible).toBe(false);
   });
 });

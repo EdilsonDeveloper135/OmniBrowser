@@ -25,7 +25,7 @@
 | navegación a código/local | allowlist `https:`, `http:`, `about:blank`; bloqueo de `javascript:`, `data:`, `file:` y esquemas desconocidos |
 | popup privilegiado | handler explícito; mismas preferencias/sesión; adopción como tarjeta |
 | escalada por permisos | permission check/request y device handlers deny-by-default; se conserva la lista por defecto de clases USB protegidas |
-| exfiltración por descarga | `will-download` cancelado |
+| descarga no atribuible o silenciosa | sólo se acepta `will-download` de un `webContents.id` registrado; diálogo nativo sin `setSavePath`; ruta nunca expuesta/persistida; cancelación al destruir el browser |
 | protocolo externo | allowlist + URL parseada + confirmación nativa; un solo diálogo a la vez y 5 s de enfriamiento por página, para que un bucle de `mailto:` no bloquee el workspace |
 | diálogos JavaScript en bucle | `safeDialogs` permite al usuario impedir más diálogos de una página |
 | persistencia corrupta/inyectada | límite de tamaño aplicado también al escribir, JSON/Zod, migraciones explícitas, `lstat`/`O_NOFOLLOW` sin seguir symlinks, escritura `0600` temporal+fsync+rename de primario y backup, preservación sin sobrescritura de archivos ilegibles o de esquemas futuros |
@@ -34,6 +34,8 @@
 | cruce de perfiles | una partición determinista por UUID; nunca copia manual de storage |
 | manipulación de runtime Electron | fuses: no RunAsNode/NODE_OPTIONS/CLI inspector, ASAR integrity y only-load-ASAR |
 | secretos en historial | solo URL/título; nunca `pageState`; límite de 500 entradas |
+| favicon remoto hostil | sólo URL HTTP(S) emitida por el WebContents; fetch con su Session, cinco redirecciones máximas, allowlist raster/ICO (SVG rechazado) y 256 KiB; clave opaca local, caché en memoria y CSP sin hosts remotos |
+| fuga Private al workspace | proyección persistente filtra perfil, browsers, URLs, títulos, historial, zonas, stacks, orden y pins Private; tests inspeccionan el JSON resultante |
 
 La CSP del shell bloquea scripts inline, `eval` y recursos de red. En el paquete, `omnibrowser://` la envía además como cabecera con `connect-src 'self'` (sin WebSocket), `frame-ancestors 'none'` y `X-Content-Type-Options: nosniff`; la cabecera se intersecta con la `<meta>`. En desarrollo, la CSP que Forge inyecta por defecto (con `'unsafe-eval'` e inline) se sustituye por la misma política más `ws://localhost:*` para la recarga en vivo. `style-src-attr 'unsafe-inline'` se mantiene únicamente porque el canvas necesita valores geométricos dinámicos en atributos `style`; no habilita JavaScript inline.
 
@@ -45,7 +47,7 @@ El resolvedor de `omnibrowser://app` solo acepta el host `app`, rechaza escapes 
 
 Los perfiles persistentes son deliberadamente durables. En macOS, el fuse `EnableCookieEncryption` permite que Electron use Keychain para cookies cuando el build tiene identidad de firma consistente. El workspace JSON no está cifrado: URLs y títulos son visibles para cualquier proceso con acceso al usuario local.
 
-Un perfil Temporal evita que OmniBrowser serialice su identidad, tarjetas, URLs e historial, y usa una partición de memoria. No se promete borrado antiforense de swap, memoria, DNS, proxies, logs del sistema o artefactos del sitio.
+Un perfil Private evita que OmniBrowser serialice su identidad, browsers, URLs, títulos, historial, zonas, stacks, orden y pins, y usa una partición de memoria. Al cruzar hacia un perfil persistente sólo se recrea la URL actual, no cookies, almacenamiento ni historial. Al cerrar la aplicación se cancelan descargas activas y se limpian almacenamiento y caché de las sesiones Private. No se promete borrado antiforense de swap, memoria, DNS, proxies, logs del sistema, artefactos del sitio ni archivos que el usuario haya decidido guardar mediante el diálogo nativo.
 
 ## Amenazas fuera de alcance
 
@@ -56,7 +58,7 @@ Un perfil Temporal evita que OmniBrowser serialice su identidad, tarjetas, URLs 
 - un gestor de contraseñas;
 - extensiones de Chromium;
 - política OAuth de terceros;
-- archivos descargados, porque las descargas no existen en el MVP.
+- contenido y ciclo de vida de un archivo después de que el usuario acepta guardarlo mediante el diálogo del sistema.
 
 ## Reglas de cambio
 

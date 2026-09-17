@@ -40,4 +40,13 @@ export class ProfileSessionManager {
       await profileSession.cookies.flushStore();
     }));
   }
+
+  async clearPrivate(profiles: readonly ProfileRecord[]): Promise<void> {
+    await Promise.all(profiles.filter((profile) => profile.kind === 'private').map(async (profile) => {
+      const profileSession = this.#sessions.get(profile.id);
+      if (!profileSession) return;
+      await Promise.all([profileSession.clearStorageData(), profileSession.clearCache()]);
+      this.#sessions.delete(profile.id);
+    }));
+  }
 }
