@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { _electron as electron, expect, test, type ElectronApplication, type Locator, type Page } from '@playwright/test';
 import electronExecutable from 'electron';
+import { MAX_ZOOM, MIN_ZOOM, ZOOM_STEP } from '../../src/shared/constants';
+import { setShellWindowSize } from '../support/app-window';
 
 const repositoryRoot = process.cwd();
 // Committed visual evidence is only replaced on explicit request, after reviewing the new captures.
@@ -55,7 +57,20 @@ async function launchApp(expectedBrowserCount = 1): Promise<void> {
   shell = shellCandidate;
   await shell.waitForLoadState('domcontentloaded');
   await expect(shell.getByText('OmniBrowser', { exact: true })).toBeVisible();
+  await setShellWindowSize(electronApp, shell);
   await expect(shell.locator('.browser-card')).toHaveCount(expectedBrowserCount);
+}
+
+/** Zooms out one toolbar step at a time until the semantic layer replaces the live canvas, whatever the starting zoom. */
+async function zoomOutToSemanticMode(): Promise<void> {
+  const zoomLabel = shell.locator('.zoom-control span');
+  for (let step = 0; step <= Math.ceil((MAX_ZOOM - MIN_ZOOM) / ZOOM_STEP); step += 1) {
+    if (await shell.locator('.semantic-layer').count() > 0) return;
+    const before = await zoomLabel.textContent();
+    await shell.getByRole('button', { name: 'Alejar' }).click();
+    await expect(zoomLabel).not.toHaveText(before ?? '');
+  }
+  await expect(shell.locator('.semantic-layer')).toHaveCount(1);
 }
 
 async function closeApp(): Promise<void> {
@@ -319,9 +334,7 @@ test.describe.serial('OmniBrowser production renderer bundle and native-view run
     }, { x: -50, y: -40 }, 9);
     await expect.poll(async () => (await snapshot()).camera.panX).not.toBe(cameraBeforePan.panX);
 
-    for (let index = 0; index < 8 && await shell.locator('.semantic-card').count() === 0; index += 1) {
-      await shell.getByRole('button', { name: 'Alejar' }).click();
-    }
+    await zoomOutToSemanticMode();
     await expect(shell.locator('.semantic-card')).toHaveCount(3);
     await shell.screenshot({ path: path.join(visualArtifactDirectory, `implementation-semantic-zoom-${visualArchitecture}.png`) });
     await shell.locator('.semantic-card').last().click();
@@ -367,9 +380,7 @@ test.describe.serial('OmniBrowser production renderer bundle and native-view run
     await expect.poll(selectedBrowserTitle).toBe(`READ p:${sharedToken} s:none l:${sharedToken}`);
     await dismissNoticeIfPresent();
 
-    await electronApp.evaluate(({ BrowserWindow }) => {
-      BrowserWindow.getAllWindows()[0]?.setContentSize(1040, 680, false);
-    });
+    await setShellWindowSize(electronApp, shell, { width: 1040, height: 680 });
     const fit = await shell.evaluate(() => {
       const selectors = ['.profile-rail', '.top-toolbar', '.canvas-viewport', '.status-bar'];
       return {

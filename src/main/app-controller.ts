@@ -31,16 +31,12 @@ import type { OmniEvent } from '../shared/contracts';
 import { BrowserRuntime } from './browser/browser-runtime';
 import { createInitialWorkspace, WorkspaceModel } from './domain/workspace-model';
 import { parseInput } from './ipc/ipc-result';
+import { ShellNotices, type ShellNotice } from './ipc/shell-notices';
 import { SaveScheduler, type SaveStatus } from './lifecycle/save-scheduler';
 import { WorkspaceStore } from './persistence/workspace-store';
 import { ProfileSessionManager } from './profiles/profile-session-manager';
 import { ExternalOpenGate } from './security/external-open-gate';
 import { confirmAndOpenExternal } from './security/security-policy';
-
-type NoticeLevel = Extract<OmniEvent, { type: 'notice' }>['level'];
-
-// Identical notices (for example repeated permission requests from one page) are shown at most once per window.
-const NOTICE_DEDUPLICATION_MS = 4000;
 
 export class OmniBrowserController {
   readonly window: BrowserWindow;
@@ -50,9 +46,8 @@ export class OmniBrowserController {
   readonly #runtime: BrowserRuntime;
   readonly #saveScheduler: SaveScheduler;
   readonly #externalOpenGate = new ExternalOpenGate();
-  readonly #recentNotices = new Map<string, number>();
+  readonly #notices = new ShellNotices((notice) => this.#emit({ type: 'notice', ...notice }));
   #saveStatus: SaveStatus = 'saved';
-  #recoveryWarning?: string;
   #shutdownPromise: Promise<void> | null = null;
   #shutdownComplete = false;
 
@@ -60,7 +55,7 @@ export class OmniBrowserController {
     this.window = window;
     this.#store = store;
     this.#model = model;
-    this.#recoveryWarning = recoveryWarning;
+    if (recoveryWarning) this.#notices.push('warning', recoveryWarning);
     this.#sessions = new ProfileSessionManager((message) => this.#notice('warning', message));
     this.#saveScheduler = new SaveScheduler(
       () => this.#store.save(this.#model.toPersistentFile()),
@@ -104,11 +99,13 @@ export class OmniBrowserController {
     return this.#shutdownComplete;
   }
 
+  /** The shell subscribes to events before it bootstraps, so notices held until now are sent right after the reply. */
   bootstrap(): WorkspaceSnapshot {
-    if (this.#recoveryWarning) {
-      const warning = this.#recoveryWarning;
-      this.#recoveryWarning = undefined;
-      setImmediate(() => this.#notice('warning', warning));
+    const pending = this.#notices.takePendingOnSubscribe();
+    if (pending.length > 0) {
+      setImmediate(() => {
+        for (const notice of pending) this.#emit({ type: 'notice', ...notice });
+      });
     }
     return this.snapshot();
   }
@@ -385,15 +382,8 @@ export class OmniBrowserController {
     this.#emit({ type: 'workspace-snapshot', snapshot: this.snapshot() });
   }
 
-  #notice(level: NoticeLevel, message: string): void {
-    const key = `${level}:${message}`;
-    const now = Date.now();
-    if (now - (this.#recentNotices.get(key) ?? Number.NEGATIVE_INFINITY) < NOTICE_DEDUPLICATION_MS) return;
-    this.#recentNotices.set(key, now);
-    for (const [candidate, shownAt] of this.#recentNotices) {
-      if (now - shownAt >= NOTICE_DEDUPLICATION_MS) this.#recentNotices.delete(candidate);
-    }
-    this.#emit({ type: 'notice', level, message });
+  #notice(level: ShellNotice['level'], message: string): void {
+    this.#notices.push(level, message);
   }
 
   #emit(event: OmniEvent): void {
@@ -408,6 +398,10 @@ export class OmniBrowserController {
     };
     this.window.on('resize', persistBounds);
     this.window.on('move', persistBounds);
+    // A reloaded shell document has no subscription until it bootstraps again.
+    this.window.webContents.on('did-start-navigation', (details) => {
+      if (details.isMainFrame && !details.isSameDocument) this.#notices.unsubscribe();
+    });
     this.window.on('close', (event) => {
       if (this.#shutdownComplete) return;
       event.preventDefault();

@@ -5,6 +5,7 @@ const root = path.resolve(__dirname, '..');
 const scripts = [
   ['profiles-and-storage', path.join(__dirname, 'run-storage.cjs')],
   ['native-canvas-composition', path.join(__dirname, 'run-electron-poc.cjs'), 'canvas'],
+  ['gesture-interception-gate', path.join(__dirname, 'run-electron-poc.cjs'), 'gestures'],
   ['popup-and-auth-flow', path.join(__dirname, 'run-electron-poc.cjs'), 'popup'],
   ['resource-lifecycle', path.join(__dirname, 'run-electron-poc.cjs'), 'resources']
 ];

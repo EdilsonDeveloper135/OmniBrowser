@@ -140,7 +140,8 @@ export class WorkspaceModel {
     for (const zone of parsed.zones) this.#zones.set(zone.id, clone(zone));
     for (const stack of parsed.stacks) this.#stacks.set(stack.id, clone(stack));
     this.#browserOrder = [...parsed.browserOrder];
-    this.#preferences = clone(parsed.preferences);
+    // History swipe is not released (see setPreferencesInputSchema); a file that enables it is read as disabled.
+    this.#preferences = { ...clone(parsed.preferences), historySwipeEnabled: false };
     this.#camera = clone(parsed.camera);
     this.#selectedBrowserId = parsed.selectedBrowserId;
     this.#windowBounds = parsed.windowBounds ? clone(parsed.windowBounds) : undefined;
@@ -497,7 +498,7 @@ export class WorkspaceModel {
   }
 
   setPreferences(update: Partial<WorkspacePreferences>): void {
-    const next = { ...this.#preferences, ...update };
+    const next = { ...this.#preferences, ...update, historySwipeEnabled: false };
     if (next.snapEnabled === this.#preferences.snapEnabled && next.historySwipeEnabled === this.#preferences.historySwipeEnabled) return;
     this.#preferences = next;
     this.#touch();

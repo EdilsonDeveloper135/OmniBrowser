@@ -14,11 +14,12 @@ import {
   Volume2,
   X
 } from 'lucide-react';
-import { useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { memo, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import type { BrowserSnapshot, ProfileRecord, WorkspaceSnapshot, ZoneRecord } from '../../shared/schemas';
 import { displayDomain } from '../../shared/urls';
 import { profileColor } from '../lib/profile-colors';
 import { browserMatchesSidebarSearch, buildSidebarTreeIndex, normalizeSidebarSearch } from '../lib/sidebar-tree';
+import { useEventCallback } from '../lib/use-event-callback';
 
 export type SidebarDropDestination =
   | { kind: 'pinned' }
@@ -48,6 +49,53 @@ function favicon(browser: BrowserSnapshot) {
     ? <img alt="" className="sidebar-favicon" src={`omnibrowser://app/favicon/${encodeURIComponent(browser.runtime.faviconKey)}`} />
     : <span className="sidebar-favicon-fallback">{domain.charAt(0).toUpperCase() || '•'}</span>;
 }
+
+interface SidebarBrowserRowProps {
+  browser: BrowserSnapshot;
+  stackId?: string;
+  selected: boolean;
+  dragging: boolean;
+  dropTarget: boolean;
+  onActivate: (browserId: string) => void;
+  onBeginDrag: (browserId: string, event: ReactPointerEvent<HTMLElement>) => void;
+  onToggleSidebarPin: (browser: BrowserSnapshot) => void;
+  onClose: (browserId: string) => void;
+  onSelectStackMember: (stackId: string, browserId: string) => void;
+}
+
+// Rows re-render only when their own browser record or row state changes: moving a card or a runtime update of one page
+// must not rebuild the other rows of a 500-browser tree.
+const SidebarBrowserRow = memo(function SidebarBrowserRow({ browser, stackId, selected, dragging, dropTarget, onActivate, onBeginDrag, onToggleSidebarPin, onClose, onSelectStackMember }: SidebarBrowserRowProps) {
+  return (
+    <div
+      className={`sidebar-browser-row ${selected ? 'is-selected' : ''} ${dragging ? 'is-dragging' : ''} ${dropTarget ? 'is-drop-target' : ''}`}
+      data-drop-id={browser.id}
+      data-drop-kind="browser"
+      onClick={() => onActivate(browser.id)}
+      onPointerDown={(event) => onBeginDrag(browser.id, event)}
+      role="button"
+      tabIndex={0}
+    >
+      {favicon(browser)}
+      <span className="sidebar-browser-copy">
+        <strong>{browser.title || displayDomain(browser.url)}</strong>
+        <small>{displayDomain(browser.url)}</small>
+      </span>
+      <span className="sidebar-browser-states">
+        {browser.runtime.isAudible ? <Volume2 aria-label="Audio" size={11} /> : null}
+        {browser.runtime.isLoading ? <LoaderCircle aria-label="Cargando" className="spin" size={11} /> : null}
+        {browser.runtime.download.activeCount > 0 ? <Download aria-label="Descargando" size={11} /> : null}
+        {browser.runtime.lastError ? <CircleAlert aria-label="Error" size={11} /> : null}
+        {browser.presentation === 'minimized' ? <Shrink aria-label="Minimizado" size={11} /> : null}
+        {browser.positionLocked ? <Lock aria-label="Bloqueado" size={11} /> : null}
+        {browser.pin.viewport ? <Pin aria-label="Fijado al viewport" size={11} /> : null}
+      </span>
+      <button className={`sidebar-pin-button ${browser.pin.sidebar ? 'is-active' : ''}`} aria-label={browser.pin.sidebar ? 'Quitar de fijados' : 'Fijar'} onClick={(event) => { event.stopPropagation(); onToggleSidebarPin(browser); }} type="button"><Pin size={11} /></button>
+      <button className="sidebar-close-button" aria-label={`Cerrar ${browser.title}`} onClick={(event) => { event.stopPropagation(); onClose(browser.id); }} type="button"><X size={12} /></button>
+      {stackId ? <button className="sidebar-stack-activate" aria-label="Mostrar en el stack" onClick={(event) => { event.stopPropagation(); onSelectStackMember(stackId, browser.id); }} type="button">Mostrar</button> : null}
+    </div>
+  );
+});
 
 function toggleSet(setter: React.Dispatch<React.SetStateAction<Set<string>>>, id: string) {
   setter((current) => {
@@ -106,7 +154,7 @@ export function ProfileRail({
     return element.dataset.dropId ? { kind, id: element.dataset.dropId } as SidebarDropDestination : null;
   };
 
-  const beginPointerDrag = (browserId: string, event: ReactPointerEvent<HTMLElement>) => {
+  const beginPointerDrag = useEventCallback((browserId: string, event: ReactPointerEvent<HTMLElement>) => {
     if (event.button !== 0 || (event.target as HTMLElement).closest('button')) return;
     const start = { x: event.clientX, y: event.clientY };
     let active = false;
@@ -134,40 +182,30 @@ export function ProfileRail({
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', finish, { once: true });
     window.addEventListener('pointercancel', finish, { once: true });
-  };
+  });
+  const activateRow = useEventCallback((browserId: string) => {
+    if (Date.now() - lastDragAt.current > 250) onLocate(browserId);
+  });
+  const toggleRowPin = useEventCallback((browser: BrowserSnapshot) => onToggleSidebarPin(browser));
+  const closeRow = useEventCallback((browserId: string) => onClose(browserId));
+  const selectRowStackMember = useEventCallback((stackId: string, browserId: string) => onSelectStackMember(stackId, browserId));
 
   const browserRow = (browser: BrowserSnapshot, options: { stackId?: string; reference?: boolean } = {}) => {
     if (!visibleIds.has(browser.id)) return null;
-    const targetKey = `browser:${browser.id}`;
     return (
-      <div
-        className={`sidebar-browser-row ${selectedBrowserIds.has(browser.id) ? 'is-selected' : ''} ${draggingBrowserId === browser.id ? 'is-dragging' : ''} ${dropTarget === targetKey ? 'is-drop-target' : ''}`}
-        data-drop-id={browser.id}
-        data-drop-kind="browser"
+      <SidebarBrowserRow
+        browser={browser}
+        dragging={draggingBrowserId === browser.id}
+        dropTarget={dropTarget === `browser:${browser.id}`}
         key={`${options.reference ? 'pin-' : ''}${browser.id}`}
-        onClick={() => { if (Date.now() - lastDragAt.current > 250) onLocate(browser.id); }}
-        onPointerDown={(event) => beginPointerDrag(browser.id, event)}
-        role="button"
-        tabIndex={0}
-      >
-        {favicon(browser)}
-        <span className="sidebar-browser-copy">
-          <strong>{browser.title || displayDomain(browser.url)}</strong>
-          <small>{displayDomain(browser.url)}</small>
-        </span>
-        <span className="sidebar-browser-states">
-          {browser.runtime.isAudible ? <Volume2 aria-label="Audio" size={11} /> : null}
-          {browser.runtime.isLoading ? <LoaderCircle aria-label="Cargando" className="spin" size={11} /> : null}
-          {browser.runtime.download.activeCount > 0 ? <Download aria-label="Descargando" size={11} /> : null}
-          {browser.runtime.lastError ? <CircleAlert aria-label="Error" size={11} /> : null}
-          {browser.presentation === 'minimized' ? <Shrink aria-label="Minimizado" size={11} /> : null}
-          {browser.positionLocked ? <Lock aria-label="Bloqueado" size={11} /> : null}
-          {browser.pin.viewport ? <Pin aria-label="Fijado al viewport" size={11} /> : null}
-        </span>
-        <button className={`sidebar-pin-button ${browser.pin.sidebar ? 'is-active' : ''}`} aria-label={browser.pin.sidebar ? 'Quitar de fijados' : 'Fijar'} onClick={(event) => { event.stopPropagation(); onToggleSidebarPin(browser); }} type="button"><Pin size={11} /></button>
-        <button className="sidebar-close-button" aria-label={`Cerrar ${browser.title}`} onClick={(event) => { event.stopPropagation(); onClose(browser.id); }} type="button"><X size={12} /></button>
-        {options.stackId ? <button className="sidebar-stack-activate" aria-label="Mostrar en el stack" onClick={(event) => { event.stopPropagation(); onSelectStackMember(options.stackId!, browser.id); }} type="button">Mostrar</button> : null}
-      </div>
+        onActivate={activateRow}
+        onBeginDrag={beginPointerDrag}
+        onClose={closeRow}
+        onSelectStackMember={selectRowStackMember}
+        onToggleSidebarPin={toggleRowPin}
+        selected={selectedBrowserIds.has(browser.id)}
+        stackId={options.stackId}
+      />
     );
   };
 

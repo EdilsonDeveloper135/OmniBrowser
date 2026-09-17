@@ -37,13 +37,16 @@ import {
   clampWorldRect,
   computeCanvasLayout,
   projectCardChrome,
+  projectWorldArea,
   roundZoom,
+  screenAreaToWorld,
   screenToWorld,
   snapMovedWorldRect,
   snapRect,
   snapResizedWorldRect,
   zoomAroundPoint,
-  type SnapGuide
+  type SnapGuide,
+  type WorldArea
 } from '../../shared/geometry';
 import type {
   BrowserSnapshot,
@@ -58,13 +61,14 @@ import { displayDomain } from '../../shared/urls';
 import { LayoutCommitter } from '../lib/layout-committer';
 import { profileColor } from '../lib/profile-colors';
 import type { ActiveInteraction } from '../lib/snapshot-merge';
-import { BrowserCard, resizeWorldRect, type ResizeDirection } from './BrowserCard';
+import { BrowserCard, resizeWorldRect, type BrowserCardActions, type ResizeDirection } from './BrowserCard';
 import { Minimap } from './Minimap';
 
 const KEYBOARD_PAN_STEP = 40;
 const KEYBOARD_PAN_LARGE_STEP = 200;
 const SEMANTIC_FOCUS_ZOOM = 0.72;
 const LOCATE_MARGIN = 80;
+const NO_BROWSERS: BrowserSnapshot[] = [];
 
 export interface LocateRequest {
   browserId: string;
@@ -112,6 +116,41 @@ function sameScreenRect(a: ScreenRect | null, b: ScreenRect | null): boolean {
 
 function sameScreenRects(a: readonly ScreenRect[], b: readonly ScreenRect[]): boolean {
   return a.length === b.length && a.every((rect, index) => sameScreenRect(rect, b[index] ?? null));
+}
+
+function sameWorldAreas(a: readonly WorldArea[], b: readonly WorldArea[]): boolean {
+  const close = (left: number, right: number) => Math.abs(left - right) < 0.01;
+  return a.length === b.length && a.every((area, index) => {
+    const other = b[index];
+    return other !== undefined && close(area.x, other.x) && close(area.y, other.y) && close(area.width, other.width) && close(area.height, other.height);
+  });
+}
+
+/**
+ * Returns the previous browser list while only runtime state (titles, loading, audio, favicons) changed, so work that
+ * depends on where cards are drawn — measuring overlays forces a synchronous layout — does not repeat for every page
+ * event. Snapshot merges keep the geometry objects of unchanged browsers, so reference checks are enough.
+ */
+function useStableGeometry(browsers: readonly BrowserSnapshot[]): readonly BrowserSnapshot[] {
+  const previous = useRef(browsers);
+  const current = previous.current;
+  const unchanged = current.length === browsers.length && browsers.every((browser, index) => {
+    const before = current[index]!;
+    return before === browser || (before.id === browser.id
+      && before.worldRect === browser.worldRect
+      && before.presentation === browser.presentation
+      && before.pin === browser.pin
+      && before.zoneId === browser.zoneId);
+  });
+  if (!unchanged) previous.current = browsers;
+  return previous.current;
+}
+
+interface Occluders {
+  /** Overlays fixed to the viewport, such as notices and the selection toolbar. */
+  screen: ScreenRect[];
+  /** Overlays drawn inside the canvas world, such as zone labels and card menus, which move with the camera. */
+  world: WorldArea[];
 }
 
 function visualRect(browser: BrowserSnapshot): WorldRect {
@@ -174,7 +213,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps) {
   } = props;
   const viewportRef = useRef<HTMLElement>(null);
   const [viewport, setViewport] = useState<ScreenRect | null>(null);
-  const [overlayRects, setOverlayRects] = useState<ScreenRect[]>([]);
+  const [occluders, setOccluders] = useState<Occluders>({ screen: [], world: [] });
   const [marquee, setMarquee] = useState<{ start: { x: number; y: number }; current: { x: number; y: number } } | null>(null);
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
   const [menuBrowserId, setMenuBrowserId] = useState<string | null>(null);
@@ -201,6 +240,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps) {
     return result;
   }, [snapshot.browsers]);
   const profileById = useMemo(() => new Map(snapshot.profiles.map((profile, index) => [profile.id, { profile, index }])), [snapshot.profiles]);
+  const cardGeometry = useStableGeometry(snapshot.browsers);
 
   useLayoutEffect(() => {
     cameraRef.current = snapshot.camera;
@@ -231,12 +271,20 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps) {
   }, [viewport]);
 
   useLayoutEffect(() => {
-    const rects = [...document.querySelectorAll<HTMLElement>('.notice-toast, .native-occluder')]
-      .map((element) => element.getBoundingClientRect())
-      .filter((rect) => rect.width > 0 && rect.height > 0)
-      .map((rect) => snapRect(rect.left, rect.top, rect.right, rect.bottom));
-    setOverlayRects((current) => sameScreenRects(current, rects) ? current : rects);
-  }, [noticeId, viewport, selectedBrowserIds, fullscreenBrowserId, menuBrowserId, snapshot.browsers, snapshot.zones, snapshot.stacks]);
+    const screen: ScreenRect[] = [];
+    const world: WorldArea[] = [];
+    for (const element of document.querySelectorAll<HTMLElement>('.notice-toast, .native-occluder')) {
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      // The DOM transform of this commit matches snapshot.camera, so world overlays convert exactly. Keeping them in
+      // world units means a pan or zoom reprojects them instead of leaving them at their previous screen position.
+      if (viewport && element.closest('.canvas-world')) world.push(screenAreaToWorld(rect, snapshot.camera, viewport));
+      else screen.push(snapRect(rect.left, rect.top, rect.right, rect.bottom));
+    }
+    setOccluders((current) => sameScreenRects(current.screen, screen) && sameWorldAreas(current.world, world) ? current : { screen, world });
+  // Overlays are the notice, the selection toolbar, zone labels and chips and the selected card's menu: they only move
+  // or appear when geometry, zones, stacks, the selection, the menu, full screen or the semantic threshold change.
+  }, [noticeId, viewport, selectedBrowserIds, snapshot.selectedBrowserId, fullscreenBrowserId, menuBrowserId, lowZoom, cardGeometry, snapshot.zones, snapshot.stacks]);
 
   const outerScreenRectFor = (browser: BrowserSnapshot): ScreenRect | null => {
     if (!viewport) return null;
@@ -277,8 +325,10 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps) {
         screenChromeBounds: (direct || browser.presentation === 'minimized') && outer ? outer : undefined
       };
     });
-    return computeCanvasLayout(cards, snapshot.camera, viewport, overlayRects);
-  }, [snapshot.browsers, snapshot.camera, viewport, overlayRects, zoneById, stackByBrowser, topStackBrowserIds, fullscreenBrowserId, menuBrowserId]);
+    const origin = { x: viewport.x, y: viewport.y };
+    const occluderRects = [...occluders.screen, ...occluders.world.map((area) => projectWorldArea(area, snapshot.camera, origin))];
+    return computeCanvasLayout(cards, snapshot.camera, viewport, occluderRects);
+  }, [snapshot.browsers, snapshot.camera, viewport, occluders, zoneById, stackByBrowser, topStackBrowserIds, fullscreenBrowserId, menuBrowserId]);
 
   useEffect(() => {
     const committer = new LayoutCommitter((batch) => window.omniBrowser.workspace.commitLayout(batch), logBridgeError('aplicar el layout nativo'));
@@ -647,40 +697,78 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps) {
     onFullscreenChange(fullscreenBrowserId === browser.id ? null : browser.id);
   };
 
+  const latestCardActions = useRef<BrowserCardActions | null>(null);
+  useLayoutEffect(() => {
+    latestCardActions.current = {
+      select: selectCard,
+      beginMove,
+      beginResize,
+      close: (browser) => { if (fullscreenBrowserId === browser.id) onFullscreenChange(null); void onClose(browser.id); },
+      sleep: (browser) => { if (fullscreenBrowserId === browser.id) onFullscreenChange(null); void onSleep(browser.id); },
+      wake: (browser) => void onWake(browser.id),
+      reload: (browser) => void onReload(browser.id),
+      stop: (browser) => void onStop(browser.id),
+      back: (browser) => void onBack(browser.id),
+      forward: (browser) => void onForward(browser.id),
+      navigate: (browser, url) => void onNavigate(browser.id, url),
+      assignProfile: (browser, profileId) => void onAssignProfile(browser.id, profileId),
+      toggleMinimized: (browser) => void onSetPresentation([browser.id], browser.presentation === 'minimized' ? 'normal' : 'minimized'),
+      toggleLocked: (browser) => void onSetLocked([browser.id], !browser.positionLocked),
+      toggleSidebarPin: (browser) => void onSetSidebarPinned([browser.id], !browser.pin.sidebar),
+      toggleViewportPin,
+      duplicate: (browser) => void onDuplicate([browser.id]),
+      fullscreen: setFullscreen,
+      menuOpenChange: (browser, open) => setMenuBrowserId(open ? browser.id : null),
+      selectStackMember: (stack, browserId) => void onSelectStackMember(stack.id, browserId),
+      unstack: (stack) => void onUnstack(stack.id)
+    };
+  });
+  // One identity for the lifetime of the canvas; every call runs the logic of the latest commit.
+  const cardActions = useMemo<BrowserCardActions>(() => {
+    const latest = () => latestCardActions.current!;
+    return {
+      select: (browser, event) => latest().select(browser, event),
+      beginMove: (browser, event) => latest().beginMove(browser, event),
+      beginResize: (browser, direction, event) => latest().beginResize(browser, direction, event),
+      close: (browser) => latest().close(browser),
+      sleep: (browser) => latest().sleep(browser),
+      wake: (browser) => latest().wake(browser),
+      reload: (browser) => latest().reload(browser),
+      stop: (browser) => latest().stop(browser),
+      back: (browser) => latest().back(browser),
+      forward: (browser) => latest().forward(browser),
+      navigate: (browser, url) => latest().navigate(browser, url),
+      assignProfile: (browser, profileId) => latest().assignProfile(browser, profileId),
+      toggleMinimized: (browser) => latest().toggleMinimized(browser),
+      toggleLocked: (browser) => latest().toggleLocked(browser),
+      toggleSidebarPin: (browser) => latest().toggleSidebarPin(browser),
+      toggleViewportPin: (browser) => latest().toggleViewportPin(browser),
+      duplicate: (browser) => latest().duplicate(browser),
+      fullscreen: (browser) => latest().fullscreen(browser),
+      menuOpenChange: (browser, open) => latest().menuOpenChange(browser, open),
+      selectStackMember: (stack, browserId) => latest().selectStackMember(stack, browserId),
+      unstack: (stack) => latest().unstack(stack)
+    };
+  }, []);
+
+  const stackMembers = useMemo(() => new Map(snapshot.stacks.map((stack) => [
+    stack.id,
+    stack.browserIds.map((id) => browserById.get(id)).filter((candidate): candidate is BrowserSnapshot => Boolean(candidate))
+  ] as const)), [snapshot.stacks, browserById]);
+
   const cardFor = (browser: BrowserSnapshot, rect: WorldRect, surface: 'world' | 'pinned' | 'immersive') => {
     const stack = stackByBrowser.get(browser.id);
-    const stackBrowsers = stack?.browserIds.map((id) => browserById.get(id)).filter((candidate): candidate is BrowserSnapshot => Boolean(candidate)) ?? [];
     return (
       <BrowserCard
+        actions={cardActions}
         browser={browser}
         key={`${surface}-${browser.id}`}
         multiSelected={selectedBrowserIds.size > 1 && selectedBrowserIds.has(browser.id)}
-        onAssignProfile={(profileId) => void onAssignProfile(browser.id, profileId)}
-        onBack={() => void onBack(browser.id)}
-        onBeginMove={(event) => beginMove(browser, event)}
-        onBeginResize={(direction, event) => beginResize(browser, direction, event)}
-        onClose={() => { if (fullscreenBrowserId === browser.id) onFullscreenChange(null); void onClose(browser.id); }}
-        onDuplicate={() => void onDuplicate([browser.id])}
-        onFocus={(event) => selectCard(browser, event)}
-        onForward={() => void onForward(browser.id)}
-        onFullscreen={() => setFullscreen(browser)}
-        onNavigate={(url) => void onNavigate(browser.id, url)}
-        onMenuOpenChange={(open) => setMenuBrowserId(open ? browser.id : null)}
-        onReload={() => void onReload(browser.id)}
-        onStop={() => void onStop(browser.id)}
-        onSelectStackMember={stack ? (browserId) => void onSelectStackMember(stack.id, browserId) : undefined}
-        onSleep={() => { if (fullscreenBrowserId === browser.id) onFullscreenChange(null); void onSleep(browser.id); }}
-        onToggleLocked={() => void onSetLocked([browser.id], !browser.positionLocked)}
-        onToggleMinimized={() => void onSetPresentation([browser.id], browser.presentation === 'minimized' ? 'normal' : 'minimized')}
-        onToggleSidebarPin={() => void onSetSidebarPinned([browser.id], !browser.pin.sidebar)}
-        onToggleViewportPin={() => toggleViewportPin(browser)}
-        onUnstack={stack ? () => void onUnstack(stack.id) : undefined}
-        onWake={() => void onWake(browser.id)}
         profiles={snapshot.profiles}
         rect={rect}
         selected={snapshot.selectedBrowserId === browser.id}
         stack={stack}
-        stackBrowsers={stackBrowsers}
+        stackBrowsers={(stack && stackMembers.get(stack.id)) ?? NO_BROWSERS}
         surface={surface}
       />
     );

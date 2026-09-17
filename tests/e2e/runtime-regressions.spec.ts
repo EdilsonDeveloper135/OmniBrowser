@@ -1,17 +1,22 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import electronExecutable from 'electron';
+import { setShellWindowSize } from '../support/app-window';
 
-// Regression coverage for the runtime audit (docs/engineering-audit.md). Every test launches its own production-bundle
-// instance with an isolated userData directory so that lifecycle scenarios cannot leak into each other.
+// Regression coverage for the runtime audits (docs/engineering-audit.md, docs/hardening-2026-09.md). Every test launches
+// its own production-bundle instance with an isolated userData directory so that lifecycle scenarios cannot leak into
+// each other.
 
 const repositoryRoot = process.cwd();
 const mainEntry = path.join('.webpack', process.arch, 'main', 'index.js');
+// Runs the same production bundle, but serves the shell script late so that the renderer subscribes after main-process
+// work that starts with the window (restoring the selected card) has already finished.
+const slowShellEntry = path.join('tests', 'e2e', 'fixtures', 'slow-shell-main.cjs');
 const userDataDirectories: string[] = [];
 
 let server: Server;
@@ -76,17 +81,23 @@ function newUserData(workspace?: unknown): string {
   return directory;
 }
 
-function launchEnvironment(userData: string): Record<string, string> {
-  const inherited = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
-  return { ...inherited, NODE_ENV: 'production', OMNIBROWSER_E2E: '1', OMNIBROWSER_E2E_USER_DATA: userData };
+function newDownloadDirectory(): string {
+  const directory = mkdtempSync(path.join(tmpdir(), 'omnibrowser-e2e-regression-downloads-'));
+  userDataDirectories.push(directory);
+  return directory;
 }
 
-async function launchApp(userData: string): Promise<Launched> {
+function launchEnvironment(userData: string, extra: Record<string, string> = {}): Record<string, string> {
+  const inherited = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
+  return { ...inherited, NODE_ENV: 'production', OMNIBROWSER_E2E: '1', OMNIBROWSER_E2E_USER_DATA: userData, ...extra };
+}
+
+async function launchApp(userData: string, options: { entry?: string; env?: Record<string, string> } = {}): Promise<Launched> {
   const app = await electron.launch({
     executablePath: electronExecutable as unknown as string,
-    args: [mainEntry],
+    args: [options.entry ?? mainEntry],
     cwd: repositoryRoot,
-    env: launchEnvironment(userData),
+    env: launchEnvironment(userData, options.env),
     timeout: 30_000
   });
   const output: string[] = [];
@@ -97,7 +108,7 @@ async function launchApp(userData: string): Promise<Launched> {
   const shell = app.windows().find((candidate) => candidate.url() === 'omnibrowser://app/index.html')!;
   await shell.waitForLoadState('domcontentloaded');
   await expect(shell.getByText('OmniBrowser', { exact: true })).toBeVisible();
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setContentSize(1440, 900, false));
+  await setShellWindowSize(app, shell);
   return { app, child, shell, userData, output };
 }
 
@@ -185,6 +196,62 @@ function mainProcessNoise(output: string[]): string[] {
   return output.join('').split('\n').filter((line) => /Error occurred in handler|ZodError|Error inesperado|UnhandledPromiseRejection|A JavaScript error/.test(line));
 }
 
+function downloadFileName(id: string): string {
+  return `download-${[...id].reverse().join('')}.bin`;
+}
+
+function uniqueToken(): string {
+  return randomUUID().replaceAll('-', '');
+}
+
+/**
+ * Test-only stand-in for the native save dialog, which Playwright cannot drive: every download of the browsers' sessions
+ * is saved in `directory`. The product's own will-download listener runs first, as it was registered when the session
+ * was created. How each download ended is recorded for the assertions.
+ */
+async function captureDownloads(app: ElectronApplication, directory: string): Promise<void> {
+  await app.evaluate(({ webContents }, target) => {
+    const state = globalThis as unknown as { __downloads?: Array<{ name: string; state: string; receivedBytes: number }>; __downloadSessions?: WeakSet<object> };
+    state.__downloads ??= [];
+    state.__downloadSessions ??= new WeakSet();
+    for (const contents of webContents.getAllWebContents()) {
+      if (contents.getURL().startsWith('omnibrowser://') || state.__downloadSessions.has(contents.session)) continue;
+      state.__downloadSessions.add(contents.session);
+      contents.session.on('will-download', (_event, item) => {
+        item.setSavePath(`${target}/${item.getFilename()}`);
+        item.once('done', (_doneEvent, doneState) => state.__downloads!.push({ name: item.getFilename(), state: doneState, receivedBytes: item.getReceivedBytes() }));
+      });
+    }
+  }, directory);
+}
+
+async function finishedDownloads(app: ElectronApplication) {
+  return app.evaluate(() => (globalThis as unknown as { __downloads?: Array<{ name: string; state: string; receivedBytes: number }> }).__downloads ?? []);
+}
+
+/** Relative paths of files under `directory` that contain any needle, encoded as UTF-8 or UTF-16LE. */
+function filesContaining(directory: string, needles: readonly string[]): string[] {
+  const patterns = needles.flatMap((needle) => [Buffer.from(needle, 'utf8'), Buffer.from(needle, 'utf16le')]);
+  const matches: string[] = [];
+  const walk = (current: string) => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const entryPath = path.join(current, entry.name);
+      if (entry.isDirectory()) walk(entryPath);
+      else if (entry.isFile() && patterns.some((pattern) => readFileSync(entryPath).includes(pattern))) matches.push(path.relative(directory, entryPath));
+    }
+  };
+  walk(directory);
+  return matches.sort();
+}
+
+/** Quits through Electron's normal path (before-quit → controller shutdown) and waits for the process to exit. */
+async function quitAndWait(launched: Launched): Promise<void> {
+  const exited = new Promise<void>((resolve) => launched.child.once('exit', () => resolve()));
+  await launched.app.evaluate(({ app }) => { setTimeout(() => app.quit(), 10); });
+  await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 15_000))]);
+  await launched.app.close().catch(() => undefined);
+}
+
 test.beforeAll(async () => {
   server = createServer((request, response) => {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
@@ -206,6 +273,38 @@ test.beforeAll(async () => {
       case '/slow':
         setTimeout(() => response.end(page('Slow')), 2500);
         return;
+      case '/tall':
+        response.end(page('Tall', '<div style="height:6000px;background:linear-gradient(#fff,#2f81f7)"></div>'));
+        return;
+      case '/marker': {
+        // Leaves the token in the title, a persistent cookie, localStorage, sessionStorage and IndexedDB.
+        const token = url.searchParams.get('token') ?? '';
+        response.setHeader('set-cookie', `omni_marker=${token}; Path=/; Max-Age=3600; SameSite=Lax`);
+        response.end(page(`Marker ${token}`, '', `localStorage.setItem('marker', '${token}'); sessionStorage.setItem('marker', '${token}'); const opening = indexedDB.open('markers', 1); opening.onupgradeneeded = () => opening.result.createObjectStore('markers'); opening.onsuccess = () => opening.result.transaction('markers', 'readwrite').objectStore('markers').put('${token}', 'token');`));
+        return;
+      }
+      case '/download': {
+        // The file name is derived from the request so that it never appears in a URL the page could have committed.
+        const size = Number(url.searchParams.get('size'));
+        const chunks = Number(url.searchParams.get('chunks') ?? 1);
+        const delay = Number(url.searchParams.get('delay') ?? 0);
+        response.writeHead(200, {
+          'content-type': 'application/octet-stream',
+          'content-length': String(size),
+          'content-disposition': `attachment; filename="${downloadFileName(url.searchParams.get('id') ?? '')}"`
+        });
+        let sent = 0;
+        const writeChunk = () => {
+          if (response.destroyed) return;
+          const bytes = Math.min(Math.ceil(size / chunks), size - sent);
+          response.write(Buffer.alloc(bytes, 7));
+          sent += bytes;
+          if (sent >= size) response.end();
+          else setTimeout(writeChunk, delay);
+        };
+        writeChunk();
+        return;
+      }
       default:
         response.end(page(url.pathname === '/two' ? 'Two' : 'One'));
     }
@@ -302,6 +401,19 @@ test('startup and restore do not depend on the network', async () => {
   await launched.shell.getByRole('button', { name: 'Atrás' }).click();
   await expect.poll(async () => (await snapshot(launched.shell)).browsers[0]?.title).toBe('One');
   expect((await snapshot(launched.shell)).browsers[0]?.id).toBe(card.id);
+  expect(mainProcessNoise(launched.output)).toEqual([]);
+  await closeApp(launched);
+});
+
+test('a load failure raised before the shell subscribes still reaches it as a notice', async () => {
+  // Port 9 is refused by Chromium itself (ERR_UNSAFE_PORT) within milliseconds, long before the delayed shell script runs.
+  const unreachable = 'http://127.0.0.1:9/unreachable';
+  const launched = await launchApp(newUserData(seededWorkspace([{ x: 40, y: 40, url: unreachable }])), {
+    entry: slowShellEntry,
+    env: { OMNIBROWSER_MAIN_BUNDLE: path.join(repositoryRoot, mainEntry), OMNIBROWSER_TEST_SHELL_SCRIPT_DELAY_MS: '1500' }
+  });
+  await expect.poll(async () => (await snapshot(launched.shell)).browsers[0]?.runtime.lastError).toBe('navigation');
+  await expect(launched.shell.locator('.notice-toast')).toContainText('No se pudo cargar 127.0.0.1');
   expect(mainProcessNoise(launched.output)).toEqual([]);
   await closeApp(launched);
 });
@@ -784,5 +896,282 @@ test('a failed profile creation keeps the panel open with the typed name', async
   await expect(launched.shell.locator('.notice-toast')).toContainText('Ya existe un perfil llamado');
   await expect(launched.shell.getByPlaceholder('Nombre')).toHaveValue('personal');
   expect((await snapshot(launched.shell)).profiles.filter((profile) => profile.name.toLowerCase() === 'personal')).toHaveLength(1);
+  await closeApp(launched);
+});
+
+test('a download reports aggregate progress to the shell but never its file name or location', async () => {
+  const launched = await launchApp(newUserData(seededWorkspace([{ x: 40, y: 40, url: `${origin}/one` }])));
+  const downloads = newDownloadDirectory();
+  const consoleLines: string[] = [];
+  launched.shell.on('console', (message) => consoleLines.push(message.text()));
+  await expect.poll(async () => (await nativeViews(launched.app)).some((view) => view.url.includes('/one'))).toBe(true);
+  await captureDownloads(launched.app, downloads);
+
+  const id = uniqueToken();
+  const fileName = downloadFileName(id);
+  const snapshots: string[] = [];
+  await submitUrl(launched.shell, `${origin}/download?id=${id}&size=2000000&chunks=40&delay=50`);
+  await expect.poll(async () => {
+    const state = await snapshot(launched.shell);
+    snapshots.push(JSON.stringify(state));
+    return state.browsers[0]?.runtime.download;
+  }).toMatchObject({ activeCount: 1, status: 'active' });
+  await expect.poll(() => finishedDownloads(launched.app), { timeout: 15_000 }).toEqual([{ name: fileName, state: 'completed', receivedBytes: 2_000_000 }]);
+  await expect.poll(async () => (await snapshot(launched.shell)).browsers[0]?.runtime).toMatchObject({ download: { activeCount: 0, status: 'idle' }, lastError: null });
+  expect(statSync(path.join(downloads, fileName)).size).toBe(2_000_000);
+
+  await launched.shell.evaluate(() => window.omniBrowser.workspace.saveNow());
+  snapshots.push(JSON.stringify(await snapshot(launched.shell)));
+  for (const serialized of snapshots) {
+    expect(serialized).not.toContain(fileName);
+    expect(serialized).not.toContain(downloads);
+  }
+  expect(filesContaining(launched.userData, [fileName, downloads])).toEqual([]);
+  expect(launched.output.join('')).not.toContain(fileName);
+  expect(consoleLines.join('\n')).not.toContain(fileName);
+  await expect(launched.shell.locator('.notice-toast')).toHaveCount(0);
+  await closeApp(launched);
+});
+
+test('closing a browser or moving it out of a Private profile cancels its download and removes the partial file', async () => {
+  const launched = await launchApp(newUserData(seededWorkspace([{ x: 40, y: 40, url: `${origin}/one` }], { selectedIndex: 0 })));
+  const downloads = newDownloadDirectory();
+  const slowDownload = (id: string) => `${origin}/download?id=${id}&size=50000000&chunks=500&delay=40`;
+  await expect.poll(async () => (await nativeViews(launched.app)).some((view) => view.url.includes('/one'))).toBe(true);
+  await captureDownloads(launched.app, downloads);
+  const initial = await snapshot(launched.shell);
+  const persistentProfileId = initial.profiles.find((profile) => profile.kind === 'persistent')!.id;
+  const closedBrowser = initial.browsers[0]!;
+
+  const closedId = uniqueToken();
+  await submitUrl(launched.shell, slowDownload(closedId));
+  await expect.poll(async () => (await snapshot(launched.shell)).browsers.find((browser) => browser.id === closedBrowser.id)?.runtime.download.receivedBytes ?? 0).toBeGreaterThan(0);
+  await launched.shell.evaluate((id) => window.omniBrowser.browsers.close(id), closedBrowser.id);
+  await expect.poll(() => finishedDownloads(launched.app)).toEqual([expect.objectContaining({ name: downloadFileName(closedId), state: 'cancelled' })]);
+  await expect.poll(() => readdirSync(downloads)).toEqual([]);
+
+  await launched.shell.getByRole('button', { name: 'Perfil', exact: true }).click();
+  await launched.shell.getByPlaceholder('Nombre').fill('Descargas QA');
+  await launched.shell.getByRole('button', { name: 'Private', exact: true }).click();
+  await launched.shell.getByRole('button', { name: 'Crear perfil' }).click();
+  await launched.shell.getByRole('button', { name: 'Abrir navegador' }).click();
+  const withPrivate = await snapshot(launched.shell);
+  const privateProfile = withPrivate.profiles.find((profile) => profile.name === 'Descargas QA')!;
+  const privateBrowser = withPrivate.browsers.find((browser) => browser.profileId === privateProfile.id)!;
+  await expect(launched.shell.locator(`[data-browser-id="${privateBrowser.id}"]`)).toHaveClass(/is-selected/);
+  await captureDownloads(launched.app, downloads);
+
+  const movedId = uniqueToken();
+  await submitUrl(launched.shell, slowDownload(movedId));
+  await expect.poll(async () => (await snapshot(launched.shell)).browsers.find((browser) => browser.id === privateBrowser.id)?.runtime.download.receivedBytes ?? 0).toBeGreaterThan(0);
+  await launched.app.evaluate(({ dialog }) => {
+    dialog.showMessageBox = (async () => ({ response: 1, checkboxChecked: false })) as typeof dialog.showMessageBox;
+  });
+  await launched.shell.evaluate(({ browserId, profileId }) => window.omniBrowser.browsers.assignProfile(browserId, profileId), { browserId: privateBrowser.id, profileId: persistentProfileId });
+  await expect.poll(() => finishedDownloads(launched.app)).toEqual([
+    expect.objectContaining({ name: downloadFileName(closedId), state: 'cancelled' }),
+    expect.objectContaining({ name: downloadFileName(movedId), state: 'cancelled' })
+  ]);
+  await expect.poll(() => readdirSync(downloads)).toEqual([]);
+  expect((await snapshot(launched.shell)).browsers.find((browser) => browser.id === privateBrowser.id)?.runtime.download.activeCount).toBe(0);
+  expect(mainProcessNoise(launched.output)).toEqual([]);
+  await closeApp(launched);
+});
+
+test('quitting cancels active downloads and leaves no Private URL, title, storage or download name in userData', async () => {
+  test.setTimeout(90_000);
+  const persistentToken = uniqueToken();
+  const privateToken = uniqueToken();
+  const userData = newUserData(seededWorkspace([{ x: 40, y: 40, url: `${origin}/marker?token=${persistentToken}` }], { selectedIndex: 0 }));
+  const downloads = newDownloadDirectory();
+  const launched = await launchApp(userData);
+  await expect.poll(async () => (await snapshot(launched.shell)).browsers[0]?.title).toBe(`Marker ${persistentToken}`);
+  const persistentBrowser = (await snapshot(launched.shell)).browsers[0]!;
+
+  await launched.shell.getByRole('button', { name: 'Perfil', exact: true }).click();
+  await launched.shell.getByPlaceholder('Nombre').fill('Rastros QA');
+  await launched.shell.getByRole('button', { name: 'Private', exact: true }).click();
+  await launched.shell.getByRole('button', { name: 'Crear perfil' }).click();
+  await launched.shell.getByRole('button', { name: 'Abrir navegador' }).click();
+  const withPrivate = await snapshot(launched.shell);
+  const privateProfile = withPrivate.profiles.find((profile) => profile.name === 'Rastros QA')!;
+  const privateBrowser = withPrivate.browsers.find((browser) => browser.profileId === privateProfile.id)!;
+  await expect(launched.shell.locator(`[data-browser-id="${privateBrowser.id}"]`)).toHaveClass(/is-selected/);
+  await captureDownloads(launched.app, downloads);
+  await submitUrl(launched.shell, `${origin}/marker?token=${privateToken}`);
+  await expect.poll(async () => (await snapshot(launched.shell)).browsers.find((browser) => browser.id === privateBrowser.id)?.title).toBe(`Marker ${privateToken}`);
+  const privateDownloadId = uniqueToken();
+  await submitUrl(launched.shell, `${origin}/download?id=${privateDownloadId}&size=100000`);
+  await expect.poll(() => finishedDownloads(launched.app)).toEqual([expect.objectContaining({ name: downloadFileName(privateDownloadId), state: 'completed' })]);
+
+  // Select the persistent card from its header, which the new Private card does not cover.
+  const header = (await launched.shell.locator(`[data-browser-id="${persistentBrowser.id}"] .browser-card-header`).boundingBox())!;
+  await launched.shell.mouse.click(header.x + 24, header.y + header.height / 2);
+  await expect(launched.shell.locator(`[data-browser-id="${persistentBrowser.id}"]`)).toHaveClass(/is-selected/);
+  const quitDownloadId = uniqueToken();
+  await submitUrl(launched.shell, `${origin}/download?id=${quitDownloadId}&size=50000000&chunks=500&delay=40`);
+  await expect.poll(async () => (await snapshot(launched.shell)).browsers.find((browser) => browser.id === persistentBrowser.id)?.runtime.download.receivedBytes ?? 0).toBeGreaterThan(0);
+  await quitAndWait(launched);
+
+  // The Private file the user accepted stays where it was saved; the interrupted one is removed.
+  expect(readdirSync(downloads)).toEqual([downloadFileName(privateDownloadId)]);
+  const privateTraces = [privateToken, downloadFileName(privateDownloadId), downloadFileName(quitDownloadId), downloads];
+  expect(filesContaining(userData, privateTraces)).toEqual([]);
+  // Control: the same search finds the persistent profile's token, so an absence above is meaningful.
+  expect(filesContaining(userData, [persistentToken])).toContain('workspace.json');
+
+  const relaunched = await launchApp(userData);
+  const restored = await snapshot(relaunched.shell);
+  expect(restored.profiles.map((profile) => profile.name)).not.toContain('Rastros QA');
+  expect(JSON.stringify(restored)).not.toContain(privateToken);
+  await quitAndWait(relaunched);
+  expect(filesContaining(userData, privateTraces)).toEqual([]);
+});
+
+test('wheel input over a live browser scrolls only its page, selected or not, and the empty canvas still pans', async () => {
+  // Two-finger panning over a browser stays behind the trackpad gate (pocs/gestures-main.cjs): no main-process hook can
+  // cancel wheel input before the page handles it, so the canvas must not react to it either.
+  const launched = await launchApp(newUserData(seededWorkspace([
+    { x: 40, y: 40, url: `${origin}/tall?card=inactive` },
+    { x: 600, y: 40, url: `${origin}/tall?card=active` }
+  ], { selectedIndex: 1 })));
+  await expect.poll(async () => (await nativeViews(launched.app)).filter((view) => view.visible && view.url.includes('/tall')).length).toBe(2);
+  await launched.shell.waitForTimeout(400);
+  const before = await snapshot(launched.shell);
+
+  for (const card of ['card=inactive', 'card=active']) {
+    await launched.app.evaluate(({ webContents }, fragment) => {
+      const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL().includes(fragment));
+      if (!contents) throw new Error(`Missing WebContents for ${fragment}`);
+      for (let step = 0; step < 10; step += 1) {
+        contents.sendInputEvent({ type: 'mouseWheel', x: 120, y: 120, deltaX: 0, deltaY: -40, hasPreciseScrollingDeltas: true, canScroll: true });
+      }
+    }, card);
+    await expect.poll(() => remoteEval<number>(launched.app, card, 'scrollY')).toBeGreaterThan(0);
+  }
+  await launched.shell.waitForTimeout(400);
+  const after = await snapshot(launched.shell);
+  expect(after.camera).toEqual(before.camera);
+  expect(after.selectedBrowserId).toBe(before.selectedBrowserId);
+  expect(after.browsers.map((browser) => browser.worldRect)).toEqual(before.browsers.map((browser) => browser.worldRect));
+
+  const canvas = (await launched.shell.locator('.canvas-viewport').boundingBox())!;
+  await launched.shell.locator('.canvas-viewport').dispatchEvent('wheel', { deltaX: 0, deltaY: 120, clientX: canvas.x + 300, clientY: canvas.y + canvas.height - 40 });
+  await expect.poll(async () => (await snapshot(launched.shell)).camera.panY).toBe(before.camera.panY - 120);
+  expect(mainProcessNoise(launched.output)).toEqual([]);
+  await closeApp(launched);
+});
+
+test('after a pan, a Chromium surface still yields to a zone label that moved with the canvas', async () => {
+  const timestamp = new Date().toISOString();
+  const profileId = randomUUID();
+  const zoneId = randomUUID();
+  const card = (id: string, zone: string | null, worldRect: { x: number; y: number; width: number; height: number }, zIndex: number, pathname: string) => ({
+    id, profileId, zoneId: zone, worldRect, zIndex, url: `${origin}${pathname}`, title: pathname, history: { entries: [{ url: `${origin}${pathname}`, title: pathname }], index: 0 },
+    suspended: false, presentation: 'normal', positionLocked: false, pin: { sidebar: false, viewport: null }, createdAt: timestamp, updatedAt: timestamp
+  });
+  const zoned = card(randomUUID(), zoneId, { x: 600, y: 330, width: 500, height: 300 }, 1, '/one');
+  // The free card is above the zone and its content covers the zone's label.
+  const free = card(randomUUID(), null, { x: 560, y: 150, width: 480, height: 360 }, 2, '/two');
+  const launched = await launchApp(newUserData({
+    schemaVersion: 2,
+    profiles: [{ id: profileId, name: 'Personal', kind: 'persistent', createdAt: timestamp, updatedAt: timestamp }],
+    browsers: [zoned, free],
+    zones: [{ id: zoneId, profileId, name: 'Zona QA', color: '#2f81f7', collapsed: false, createdAt: timestamp, updatedAt: timestamp }],
+    stacks: [],
+    browserOrder: [zoned.id, free.id],
+    preferences: { snapEnabled: false, historySwipeEnabled: false },
+    camera: { panX: 0, panY: 0, zoom: 1 },
+    selectedBrowserId: free.id,
+    createdAt: timestamp,
+    updatedAt: timestamp
+  }));
+  const coverage = async () => {
+    const view = (await nativeViews(launched.app)).find((candidate) => candidate.url.endsWith('/two'));
+    const label = (await launched.shell.locator('.zone-label').boundingBox())!;
+    const covers = Boolean(view?.visible) && view!.bounds.x < label.x + label.width && view!.bounds.x + view!.bounds.width > label.x
+      && view!.bounds.y < label.y + label.height && view!.bounds.y + view!.bounds.height > label.y;
+    return { labelY: Math.round(label.y), freeVisible: Boolean(view?.visible), covers };
+  };
+  await expect.poll(async () => (await nativeViews(launched.app)).some((view) => view.url.endsWith('/two'))).toBe(true);
+  await launched.shell.waitForTimeout(500);
+  expect(await coverage()).toMatchObject({ labelY: 338, freeVisible: false, covers: false });
+
+  await launched.shell.locator('.canvas-viewport').dispatchEvent('wheel', { deltaX: 0, deltaY: -300 });
+  await expect.poll(async () => (await coverage()).labelY).toBe(638);
+  await launched.shell.waitForTimeout(500);
+  expect(await coverage()).toMatchObject({ freeVisible: false, covers: false });
+  await closeApp(launched);
+});
+
+test('multi-selection works from a canvas marquee and from shift-presses inside native content', async () => {
+  const launched = await launchApp(newUserData(seededWorkspace([
+    { x: 40, y: 40, width: 400, height: 300, url: `${origin}/one?card=first` },
+    { x: 500, y: 40, width: 400, height: 300, url: `${origin}/one?card=second` },
+    { x: 40, y: 380, width: 400, height: 300, url: `${origin}/one?card=third` }
+  ], { selectedIndex: 0 })));
+  const [first, second, third] = (await snapshot(launched.shell)).browsers;
+  await expect.poll(async () => (await nativeViews(launched.app)).filter((view) => view.url.includes('card=')).length).toBe(3);
+
+  // Shift-drag on empty canvas selects every card the marquee touches: the first two, not the third.
+  const canvas = (await launched.shell.locator('.canvas-viewport').boundingBox())!;
+  await launched.shell.evaluate(async ({ from, to }) => {
+    const target = document.querySelector('.canvas-viewport')!;
+    const init = { bubbles: true, cancelable: true, composed: true, pointerId: 41, pointerType: 'mouse', isPrimary: true, button: 0, shiftKey: true };
+    target.dispatchEvent(new PointerEvent('pointerdown', { ...init, buttons: 1, clientX: from.x, clientY: from.y }));
+    for (let frame = 1; frame <= 6; frame += 1) {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      window.dispatchEvent(new PointerEvent('pointermove', { ...init, buttons: 1, clientX: from.x + ((to.x - from.x) * frame) / 6, clientY: from.y + ((to.y - from.y) * frame) / 6 }));
+    }
+    window.dispatchEvent(new PointerEvent('pointerup', { ...init, buttons: 0, clientX: to.x, clientY: to.y }));
+  }, { from: { x: canvas.x + 20, y: canvas.y + 20 }, to: { x: canvas.x + 950, y: canvas.y + 200 } });
+  await expect(launched.shell.locator('.selection-toolbar')).toContainText('2 seleccionados');
+  await expect(launched.shell.locator(`[data-browser-id="${first!.id}"]`)).toHaveClass(/is-multi-selected/);
+  await expect(launched.shell.locator(`[data-browser-id="${second!.id}"]`)).toHaveClass(/is-multi-selected/);
+
+  // Like a user: Shift goes down in whatever has keyboard focus, then the press lands in the page.
+  const pressInside = (fragment: string, shift: boolean) => launched.app.evaluate(({ BrowserWindow, webContents }, { card, withShift }) => {
+    const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL().includes(card));
+    if (!contents) throw new Error(`Missing WebContents for ${card}`);
+    const focused = BrowserWindow.getAllWindows()[0]!.webContents;
+    const modifiers: Array<'shift'> = withShift ? ['shift'] : [];
+    if (withShift) focused.sendInputEvent({ type: 'keyDown', keyCode: 'Shift' });
+    contents.sendInputEvent({ type: 'mouseDown', x: 30, y: 30, button: 'left', clickCount: 1, modifiers });
+    contents.sendInputEvent({ type: 'mouseUp', x: 30, y: 30, button: 'left', clickCount: 1, modifiers });
+    if (withShift) contents.sendInputEvent({ type: 'keyUp', keyCode: 'Shift' });
+  }, { card: fragment, withShift: shift });
+
+  // Shift inside a page adds its card, a second shift-press removes it, and a plain press selects only that card.
+  await pressInside('card=third', true);
+  await expect(launched.shell.locator('.selection-toolbar')).toContainText('3 seleccionados');
+  await pressInside('card=third', true);
+  await expect(launched.shell.locator('.selection-toolbar')).toContainText('2 seleccionados');
+  await expect(launched.shell.locator(`[data-browser-id="${third!.id}"]`)).not.toHaveClass(/is-multi-selected/);
+  await pressInside('card=first', false);
+  await expect(launched.shell.locator('.selection-toolbar')).toHaveCount(0);
+  await expect.poll(async () => (await snapshot(launched.shell)).selectedBrowserId).toBe(first!.id);
+  expect(mainProcessNoise(launched.output)).toEqual([]);
+  await closeApp(launched);
+});
+
+test('an open card menu hides the Chromium surfaces it overlaps and they return when it closes', async () => {
+  // The selected card is short, so its menu extends below it over the card underneath.
+  const launched = await launchApp(newUserData(seededWorkspace([
+    { x: 40, y: 300, width: 520, height: 300, url: `${origin}/two` },
+    { x: 40, y: 40, width: 520, height: 240, url: `${origin}/one` }
+  ], { selectedIndex: 1 })));
+  const [below, selected] = (await snapshot(launched.shell)).browsers;
+  const belowVisible = async () => (await nativeViews(launched.app)).find((view) => view.url.endsWith('/two'))?.visible ?? false;
+  await expect.poll(belowVisible).toBe(true);
+
+  const menu = await openBrowserMenu(launched.shell, selected!.id);
+  const popover = (await menu.locator('.card-menu-popover').boundingBox())!;
+  const belowContent = (await launched.shell.locator(`[data-browser-id="${below!.id}"] .browser-content-slot`).boundingBox())!;
+  expect(popover.y + popover.height).toBeGreaterThan(belowContent.y);
+  await expect.poll(belowVisible).toBe(false);
+
+  await menu.locator('summary').click();
+  await expect(menu.locator('.card-menu-popover')).toBeHidden();
+  await expect.poll(belowVisible).toBe(true);
   await closeApp(launched);
 });

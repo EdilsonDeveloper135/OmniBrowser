@@ -268,7 +268,9 @@ export const addStackMemberInputSchema = z.object({ stackId: uuidSchema, browser
 export const selectStackMemberInputSchema = z.object({ stackId: uuidSchema, browserId: uuidSchema }).strict();
 export const stackIdInputSchema = z.object({ stackId: uuidSchema }).strict();
 export const setBrowserOrderInputSchema = z.object({ browserOrder: z.array(uuidSchema).max(500) }).strict();
-export const setPreferencesInputSchema = z.object({ snapEnabled: z.boolean().optional(), historySwipeEnabled: z.boolean().optional() }).strict().refine((value) => value.snapEnabled !== undefined || value.historySwipeEnabled !== undefined, { message: 'No hay preferencias para actualizar.' });
+// History swipe stays behind the trackpad compatibility gate (docs/architecture.md): Electron cannot cancel wheel input
+// before a WebContentsView handles it, so no client may enable the preference until a gesture router ships.
+export const setPreferencesInputSchema = z.object({ snapEnabled: z.boolean().optional(), historySwipeEnabled: z.literal(false).optional() }).strict().refine((value) => value.snapEnabled !== undefined || value.historySwipeEnabled !== undefined, { message: 'No hay preferencias para actualizar.' });
 
 export const layoutItemSchema = z.object({
   browserId: uuidSchema,

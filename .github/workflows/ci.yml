@@ -48,6 +48,8 @@ jobs:
 
       - name: Run Electron proof-of-concepts
         run: npm run test:poc
+        env:
+          OMNIBROWSER_REQUIRE_COMPOSITE_CAPTURE: '1'
 
       - name: Build packaged application
         run: npm run package -- --arch=${{ matrix.arch }}
@@ -68,8 +70,22 @@ jobs:
           grep -q 'OnlyLoadAppFromAsar is Enabled' /tmp/omnibrowser-fuses.txt
           grep -q 'GrantFileProtocolExtraPrivileges is Disabled' /tmp/omnibrowser-fuses.txt
 
+      - name: Report the virtual display
+        run: system_profiler SPDisplaysDataType | grep -E 'Resolution|Looks like|Main Display' || true
+
       - name: Run Electron end-to-end suite
         run: npm run test:e2e:only
+
+      - name: Upload end-to-end evidence
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-${{ matrix.arch }}
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Audit runtime dependencies
         run: npm audit --omit=dev

@@ -44,6 +44,7 @@
     "test:poc": "node pocs/run-all.cjs",
     "test:poc:storage": "node pocs/run-storage.cjs",
     "test:poc:canvas": "node pocs/run-electron-poc.cjs canvas",
+    "test:poc:gestures": "node pocs/run-electron-poc.cjs gestures",
     "test:poc:popup": "node pocs/run-electron-poc.cjs popup",
     "test:poc:resources": "node pocs/run-electron-poc.cjs resources",
     "test:e2e": "npm run package && npm run test:e2e:only",

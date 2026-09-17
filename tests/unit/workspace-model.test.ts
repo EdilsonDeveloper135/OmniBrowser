@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { BrowserNotFoundError, createInitialWorkspace, WorkspaceModel } from '../../src/main/domain/workspace-model';
 import { MAX_URL_LENGTH } from '../../src/shared/constants';
 import { OmniUserError } from '../../src/shared/errors';
-import { workspaceFileSchema } from '../../src/shared/schemas';
+import { setPreferencesInputSchema, workspaceFileSchema } from '../../src/shared/schemas';
 import { raiseToTop } from '../../src/shared/z-order';
 
 describe('WorkspaceModel persistence projection', () => {
@@ -258,6 +258,17 @@ describe('WorkspaceModel integrity', () => {
     expect(snapshot.preferences).toEqual({ snapEnabled: true, historySwipeEnabled: false });
     expect(model.listBrowsers().map(({ id, zIndex }) => [id, zIndex])).toEqual(beforeZ);
     expect(() => model.setBrowserOrder([first.id, first.id])).toThrow(/exactamente una vez/);
+  });
+
+  it('keeps history swipe disabled while the trackpad gesture gate is closed', () => {
+    const file = createInitialWorkspace();
+    const model = new WorkspaceModel({ ...file, preferences: { snapEnabled: true, historySwipeEnabled: true } });
+    expect(model.toSnapshot(new Map(), 'saved').preferences).toEqual({ snapEnabled: true, historySwipeEnabled: false });
+    model.setPreferences({ historySwipeEnabled: true });
+    expect(model.toPersistentFile().preferences).toEqual({ snapEnabled: true, historySwipeEnabled: false });
+    expect(setPreferencesInputSchema.safeParse({ historySwipeEnabled: true }).success).toBe(false);
+    expect(setPreferencesInputSchema.safeParse({ historySwipeEnabled: false }).success).toBe(true);
+    expect(setPreferencesInputSchema.safeParse({ snapEnabled: false }).success).toBe(true);
   });
 
   it('keeps the workspace serializable after Chromium reports URLs longer than the persisted limit', () => {

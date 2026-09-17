@@ -1,9 +1,9 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { startFixtureServer } = require('./lib/fixture-server.cjs');
 const { runElectron } = require('./lib/run-electron.cjs');
+const { createWorkingDirectory } = require('./lib/working-directory.cjs');
 
 const root = path.resolve(__dirname, '..');
 const entry = path.join(__dirname, 'storage-main.cjs');
@@ -27,7 +27,9 @@ const sharedStorage = (value, expectSessionCookie) => {
 };
 
 (async () => {
-  const workingDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'omnibrowser-storage-poc-'));
+  const working = createWorkingDirectory('storage');
+  const workingDirectory = working.directory;
+  let passed = false;
   const userData = path.join(workingDirectory, 'user-data');
   const seedOutput = path.join(workingDirectory, 'seed.json');
   const verifyOutput = path.join(workingDirectory, 'verify.json');
@@ -92,8 +94,10 @@ const sharedStorage = (value, expectSessionCookie) => {
       }
     };
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    passed = true;
   } finally {
     await server.close();
+    working.release(passed);
   }
 })().catch((error) => {
   console.error(error);

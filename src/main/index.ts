@@ -52,6 +52,9 @@ async function createMainWindow(): Promise<void> {
     title: 'OmniBrowser',
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 18, y: 18 },
+    // CI virtual displays are smaller than the 1440×900 window the E2E geometry uses, and macOS would shrink it to the
+    // display's work area. Only automated runs may exceed the screen.
+    enableLargerThanScreen: process.env.OMNIBROWSER_E2E === '1',
     webPreferences: shellWebPreferences(MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY)
   });
   const nextController = await OmniBrowserController.create(window);

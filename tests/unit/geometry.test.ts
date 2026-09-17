@@ -16,8 +16,10 @@ import {
   clampWorldRect,
   boundsForWorldRects,
   computeCanvasLayout,
+  projectWorldArea,
   projectWorldRect,
   roundZoom,
+  screenAreaToWorld,
   screenDeltaToWorld,
   screenToWorld,
   snapMovedWorldRect,
@@ -152,6 +154,25 @@ describe('native view layout', () => {
     const withNotice = computeCanvasLayout([cornerCard], camera, viewport, [{ x: 1000, y: 780, width: 420, height: 44 }]);
     expect(withNotice.items[0]?.visible).toBe(false);
     expect(withNotice.minimapCovered).toBe(false);
+  });
+
+  it('keeps an overlay drawn inside the world anchored to it when the camera pans or zooms', () => {
+    const measuredAt = { panX: 0, panY: 0, zoom: 1 };
+    // A zone label measured at (865, 338) inside the card content before a 300 px pan.
+    const label = screenAreaToWorld({ left: 865, top: 338, right: 951.5, bottom: 363 }, measuredAt, viewport);
+    const free = card('free', 2, { x: 560, y: 150, width: 480, height: 360 });
+    expect(computeCanvasLayout([free], measuredAt, viewport, [projectWorldArea(label, measuredAt, viewport)]).items[0]?.visible).toBe(false);
+    const panned = { ...measuredAt, panY: 300 };
+    expect(projectWorldArea(label, panned, viewport)).toEqual({ x: 865, y: 638, width: 87, height: 25 });
+    expect(computeCanvasLayout([free], panned, viewport, [projectWorldArea(label, panned, viewport)]).items[0]?.visible).toBe(false);
+    // A screen rectangle measured before the pan would have let the surface cover the label.
+    expect(computeCanvasLayout([free], panned, viewport, [{ x: 865, y: 338, width: 87, height: 25 }]).items[0]?.visible).toBe(true);
+    const zoomed = { panX: -40, panY: 20, zoom: 0.5 };
+    const projected = projectWorldArea(label, zoomed, viewport);
+    const roundTrip = screenAreaToWorld({ left: projected.x, top: projected.y, right: projected.x + projected.width, bottom: projected.y + projected.height }, zoomed, viewport);
+    // Projection rounds to whole screen pixels, so the round trip is exact to one screen pixel in world units.
+    expect(Math.abs(roundTrip.x - label.x)).toBeLessThanOrEqual(1 / zoomed.zoom);
+    expect(Math.abs(roundTrip.y - label.y)).toBeLessThanOrEqual(1 / zoomed.zoom);
   });
 
   it('never shows suspended, crashed or semantic-zoom cards', () => {

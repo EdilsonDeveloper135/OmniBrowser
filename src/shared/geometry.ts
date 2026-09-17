@@ -123,6 +123,29 @@ export function screenToWorld(point: Point, camera: Camera, viewportOrigin: Poin
   return { x: (point.x - viewportOrigin.x - camera.panX) / zoom, y: (point.y - viewportOrigin.y - camera.panY) / zoom };
 }
 
+/** A rectangle in world units that is not a card (an overlay drawn inside the canvas world), so no size limits apply. */
+export interface WorldArea {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** Converts a measured screen rectangle of something drawn inside the canvas world into world units. */
+export function screenAreaToWorld(area: { left: number; top: number; right: number; bottom: number }, camera: Camera, viewportOrigin: Point): WorldArea {
+  const zoom = clampZoom(camera.zoom);
+  const topLeft = screenToWorld({ x: area.left, y: area.top }, camera, viewportOrigin);
+  return { x: topLeft.x, y: topLeft.y, width: (area.right - area.left) / zoom, height: (area.bottom - area.top) / zoom };
+}
+
+/** Screen bounds of a world area under the given camera, rounded by edge like card surfaces. */
+export function projectWorldArea(area: WorldArea, camera: Camera, viewportOrigin: Point): ScreenRect {
+  const zoom = clampZoom(camera.zoom);
+  const originX = viewportOrigin.x + camera.panX;
+  const originY = viewportOrigin.y + camera.panY;
+  return snapRect(originX + area.x * zoom, originY + area.y * zoom, originX + (area.x + area.width) * zoom, originY + (area.y + area.height) * zoom);
+}
+
 export function screenDeltaToWorld(delta: Point, zoom: number): Point {
   const safeZoom = clampZoom(zoom);
   return { x: delta.x / safeZoom, y: delta.y / safeZoom };

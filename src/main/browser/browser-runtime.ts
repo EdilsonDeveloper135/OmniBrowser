@@ -1,4 +1,4 @@
-import type { BrowserWindowConstructorOptions, Event, Session, WebContents } from 'electron';
+import type { BrowserWindowConstructorOptions, Event, Input, Session, WebContents } from 'electron';
 import { BrowserWindow, WebContentsView } from 'electron';
 import {
   DEFAULT_BROWSER_URL,
@@ -69,6 +69,9 @@ export class BrowserRuntime {
   readonly #syncTimers = new Map<string, NodeJS.Timeout>();
   readonly #lastSyncAt = new Map<string, number>();
   readonly #pendingCaptures = new Set<string>();
+  // Electron serializes mouse events for 'input-event' without their modifiers, so whether Shift is held during a press
+  // inside a page comes from the key events of the shell and of every page instead.
+  #shiftHeld = false;
   #disposed = false;
 
   constructor(options: BrowserRuntimeOptions) {
@@ -83,6 +86,8 @@ export class BrowserRuntime {
     this.#onNativeBrowserClick = options.onNativeBrowserClick ?? (() => undefined);
     this.#onNativeBrowserEscape = options.onNativeBrowserEscape ?? (() => undefined);
     this.#onContentsDestroyed = options.onContentsDestroyed ?? (() => undefined);
+    this.#window.webContents.on('before-input-event', (_event, input) => this.#trackModifiers(input));
+    this.#window.on('blur', () => { this.#shiftHeld = false; });
   }
 
   /** Creates the selected browser first. Its page loads in the background, so startup never waits for the network. */
@@ -452,6 +457,7 @@ export class BrowserRuntime {
       this.#onBrowserChanged(browserId);
     });
     contents.on('before-input-event', (event, input) => {
+      this.#trackModifiers(input);
       if (input.type !== 'keyDown' || input.key !== 'Escape' || entry.surfaceLayer !== 'immersive') return;
       event.preventDefault();
       this.#onNativeBrowserEscape(browserId);
@@ -460,7 +466,7 @@ export class BrowserRuntime {
     // lazy view creation and window.focus(), which would let a background page steal the selection.
     contents.on('input-event', (_event, input) => {
       if (input.type === 'mouseDown' || input.type === 'touchStart' || input.type === 'gestureTapDown') {
-        this.#onNativeBrowserClick(browserId, 'modifiers' in input && Boolean(input.modifiers?.includes('shift')));
+        this.#onNativeBrowserClick(browserId, this.#shiftHeld || ('modifiers' in input && Boolean(input.modifiers?.includes('shift'))));
         this.#selectFromPage(browserId, entry);
       }
     });
@@ -519,6 +525,10 @@ export class BrowserRuntime {
     this.#scheduleSave();
     setImmediate(() => this.#onModelChanged());
     return providedContents;
+  }
+
+  #trackModifiers(input: Input): void {
+    if (input.key === 'Shift' && (input.type === 'keyDown' || input.type === 'keyUp')) this.#shiftHeld = input.type === 'keyDown';
   }
 
   #selectFromPage(browserId: string, entry: RuntimeEntry): void {
