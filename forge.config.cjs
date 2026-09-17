@@ -1,4 +1,5 @@
 const { execFile } = require('node:child_process');
+const { lutimes, readdir, utimes } = require('node:fs/promises');
 const path = require('node:path');
 const { promisify } = require('node:util');
 const { MakerDMG } = require('@electron-forge/maker-dmg');
@@ -9,6 +10,19 @@ const { FuseVersion, FuseV1Options } = require('@electron/fuses');
 
 const macSignIdentity = process.env.OMNIBROWSER_MAC_SIGN_IDENTITY;
 const execFileAsync = promisify(execFile);
+
+// Electron's release zips date every entry 1980-01-01. The extractor that package.json overrides into
+// @electron/packager@18 restores those dates, so the tree is re-dated to the packaging time, as @electron/packager
+// 20.2.0 does after the same extractor (electron/packager#1940). Symlinks are re-dated without touching their targets.
+async function resetTimestamps(directory, timestamp) {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) await resetTimestamps(entryPath, timestamp);
+    else if (entry.isSymbolicLink()) await lutimes(entryPath, timestamp, timestamp);
+    else await utimes(entryPath, timestamp, timestamp);
+  }
+  await utimes(directory, timestamp, timestamp);
+}
 
 module.exports = {
   outDir: process.env.OMNIBROWSER_OUT_DIR || 'out',
@@ -28,6 +42,9 @@ module.exports = {
   },
   rebuildConfig: {},
   hooks: {
+    packageAfterExtract: async (_forgeConfig, buildPath) => {
+      await resetTimestamps(buildPath, new Date());
+    },
     postPackage: async (_forgeConfig, packageResult) => {
       if (packageResult.platform !== 'darwin' || macSignIdentity) return;
       await Promise.all(packageResult.outputPaths.map(async (outputPath) => {
@@ -57,6 +74,8 @@ module.exports = {
       // webpack live-reload socket on localhost is added to the packaged policy.
       devContentSecurityPolicy: "default-src 'self'; script-src 'self'; style-src 'self'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws://localhost:*; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'",
       devServer: {
+        // webpack-dev-server listens on every interface when no host is given; the renderer entry is localhost-only.
+        host: 'localhost',
         client: { overlay: false },
         headers: {
           'Cross-Origin-Opener-Policy': 'same-origin',
