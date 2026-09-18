@@ -1,5 +1,5 @@
 import type { z } from 'zod';
-import { MAX_URL_LENGTH } from '../../shared/constants';
+import { MAX_AGENT_INSTRUCTION_LENGTH, MAX_URL_LENGTH } from '../../shared/constants';
 import { OmniUserError, type IpcResult } from '../../shared/errors';
 
 type Logger = (message: string, error: unknown) => void;
@@ -14,6 +14,14 @@ function describeInvalidInput(issues: readonly z.core.$ZodIssue[]): string {
     if (issue?.code === 'too_small') return 'Introduce un nombre para el perfil.';
     if (issue?.code === 'too_big') return 'El nombre del perfil admite como máximo 48 caracteres.';
   }
+  if (field === 'instruction') {
+    return issue?.code === 'too_big'
+      ? `La instrucción supera el límite de ${MAX_AGENT_INSTRUCTION_LENGTH} caracteres.`
+      : 'Escribe una instrucción para el agente.';
+  }
+  if (field === 'baseUrl') return 'Introduce una URL base válida para el proveedor (http o https).';
+  if (field === 'model') return issue?.code === 'too_big' ? 'El nombre del modelo es demasiado largo.' : 'Introduce el nombre del modelo.';
+  if (field === 'apiKey') return 'La clave API no es válida.';
   return 'La solicitud no es válida.';
 }
 

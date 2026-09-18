@@ -5,6 +5,7 @@ import type { OmniEvent } from '../shared/contracts';
 import { clampCamera, roundZoom, zoomAroundPoint } from '../shared/geometry';
 import type { BrowserSnapshot, Camera, ProfileRecord, WorkspaceSnapshot, WorldRect, ZoneRecord } from '../shared/schemas';
 import { raiseToTop } from '../shared/z-order';
+import { AgentProviderModal } from './components/AgentProviderModal';
 import { NoticeToast, type NoticeState } from './components/NoticeToast';
 import { ProfileRail, type SidebarDropDestination } from './components/ProfileRail';
 import { PromptModal } from './components/PromptModal';
@@ -13,6 +14,7 @@ import { Toolbar } from './components/Toolbar';
 import { WorkspaceCanvas, type LocateRequest } from './components/WorkspaceCanvas';
 import { userFacingError } from './lib/errors';
 import { mergeBrowserState, mergeWorkspaceSnapshot, type ActiveInteraction } from './lib/snapshot-merge';
+import { useAgents } from './lib/use-agents';
 
 const ZONE_COLORS = ['#2f81f7', '#a371f7', '#3fb950', '#f0883e', '#db61a2', '#39c5cf'];
 
@@ -24,6 +26,7 @@ export function App() {
   const [locateRequest, setLocateRequest] = useState<LocateRequest | null>(null);
   const [notice, setNotice] = useState<NoticeState | null>(null);
   const [fatalError, setFatalError] = useState<string | null>(null);
+  const [agentProviderOpen, setAgentProviderOpen] = useState(false);
   const [pendingZoneCreation, setPendingZoneCreation] = useState<{
     browserIds: string[];
     profileId: string;
@@ -42,6 +45,10 @@ export function App() {
     setNotice(next);
     window.setTimeout(() => setNotice((current) => current?.id === next.id ? null : current), 5000);
   }, []);
+
+  const agents = useAgents(pushNotice);
+  const { handleEvent: handleAgentEvent, load: loadAgents, retain: retainAgents } = agents;
+  const closeAgentProvider = useCallback(() => setAgentProviderOpen(false), []);
 
   useEffect(() => {
     let active = true;
@@ -62,7 +69,9 @@ export function App() {
       }
       if (event.type === 'save-status') setSnapshot((current) => current ? { ...current, saveStatus: event.status } : current);
       if (event.type === 'notice') pushNotice(event.level, event.message);
+      if (event.type === 'agent-state' || event.type === 'agent-event') handleAgentEvent(event);
     });
+    void loadAgents(() => active);
     window.omniBrowser.bootstrap().then((initial) => {
       if (!active) return;
       setSnapshot(initial);
@@ -73,7 +82,7 @@ export function App() {
       if (active) setFatalError(userFacingError(error));
     });
     return () => { active = false; unsubscribe(); };
-  }, [pushNotice]);
+  }, [handleAgentEvent, loadAgents, pushNotice]);
 
   useEffect(() => {
     if (!snapshot) return;
@@ -85,6 +94,7 @@ export function App() {
     if ((activeBrowserChanged || activeBrowserProfileChanged) && activeBrowser) setActiveProfileId(activeBrowser.profileId);
     else if (!activeProfileId || !snapshot.profiles.some((profile) => profile.id === activeProfileId)) setActiveProfileId(snapshot.profiles[0]?.id ?? null);
     const ids = new Set(snapshot.browsers.map((browser) => browser.id));
+    retainAgents(ids);
     setSelectedBrowserIds((current) => {
       const next = new Set([...current].filter((id) => ids.has(id)));
       if (activeBrowserChanged && snapshot.selectedBrowserId && !next.has(snapshot.selectedBrowserId)) {
@@ -93,7 +103,7 @@ export function App() {
       const unchanged = next.size === current.size && [...next].every((id) => current.has(id));
       return unchanged ? current : next;
     });
-  }, [snapshot, activeProfileId]);
+  }, [snapshot, activeProfileId, retainAgents]);
 
   const run = async <T,>(operation: () => Promise<T>, apply?: (value: T) => void): Promise<T | undefined> => {
     try {
@@ -253,10 +263,20 @@ export function App() {
         zoom={snapshot.camera.zoom}
       />
       <WorkspaceCanvas
+        agentErrors={agents.errors}
+        agentLoadingIds={agents.loadingIds}
+        agentProviderReady={agents.provider?.configured ?? false}
+        agentSnapshots={agents.snapshots}
+        agentSummaries={agents.summaries}
         fullscreenBrowserId={fullscreenBrowserId}
         locateRequest={locateRequest}
-        modalActive={pendingZoneCreation !== null}
+        modalActive={pendingZoneCreation !== null || agentProviderOpen}
         noticeId={notice?.id ?? null}
+        onAgentPanelOpenChange={agents.setPanelOpen}
+        onAgentPause={(browserId) => agents.runAction(browserId, () => window.omniBrowser.agents.pause(browserId))}
+        onAgentResume={(browserId) => agents.runAction(browserId, () => window.omniBrowser.agents.resume(browserId))}
+        onAgentSend={(browserId, instruction) => agents.runAction(browserId, () => window.omniBrowser.agents.send(browserId, instruction))}
+        onAgentStop={(browserId) => agents.runAction(browserId, () => window.omniBrowser.agents.stop(browserId))}
         onAssignProfile={(browserId, profileId) => run(() => window.omniBrowser.browsers.assignProfile(browserId, profileId), applySnapshot).then(() => undefined)}
         onBack={(browserId) => run(() => window.omniBrowser.browsers.back(browserId)).then(() => undefined)}
         onClearFocus={clearFocus}
@@ -269,6 +289,7 @@ export function App() {
         onFullscreenChange={setFullscreenBrowserId}
         onInteractionChange={(interaction) => { interactionRef.current = interaction; }}
         onNavigate={(browserId, url) => run(() => window.omniBrowser.browsers.navigate(browserId, url)).then(() => undefined)}
+        onOpenAgentSettings={() => { setAgentProviderOpen(true); void agents.refreshProvider(); }}
         onReload={(browserId) => run(() => window.omniBrowser.browsers.reload(browserId)).then(() => undefined)}
         onSelectionChange={setSelectedBrowserIds}
         onSelectStackMember={(stackId, browserId) => run(() => window.omniBrowser.workspace.selectStackMember(stackId, browserId), applySnapshot).then(() => undefined)}
@@ -284,6 +305,7 @@ export function App() {
         onUpdateCamera={updateCamera}
         onViewportChange={(size) => { viewportSizeRef.current = size; }}
         onWake={(browserId) => run(() => window.omniBrowser.browsers.wake(browserId), applySnapshot).then(() => undefined)}
+        openAgentPanelIds={agents.openPanelIds}
         selectedBrowserIds={selectedBrowserIds}
         snapshot={snapshot}
       />
@@ -299,6 +321,13 @@ export function App() {
         cancelLabel="Cancelar"
         onConfirm={handleConfirmZone}
         onCancel={handleCancelZone}
+      />
+      <AgentProviderModal
+        isOpen={agentProviderOpen}
+        onClose={closeAgentProvider}
+        onSave={agents.saveProvider}
+        onTest={agents.testProvider}
+        provider={agents.provider}
       />
     </div>
   );

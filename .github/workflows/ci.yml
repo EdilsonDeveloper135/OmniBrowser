@@ -25,7 +25,7 @@ jobs:
           - runner: macos-13
             arch: x64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 35
+    timeout-minutes: 50
 
     steps:
       - name: Checkout
@@ -40,6 +40,11 @@ jobs:
       - name: Select the active macOS SDK
         run: echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> "$GITHUB_ENV"
 
+      - name: Use Python for the agent sidecar
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Install exact dependencies
         run: npm ci
 
@@ -50,6 +55,17 @@ jobs:
         run: npm run test:poc
         env:
           OMNIBROWSER_REQUIRE_COMPOSITE_CAPTURE: '1'
+
+      - name: Test the agent sidecar protocol
+        run: npm run agent:test
+
+      - name: Build the Browser Use sidecar
+        run: npm run agent:build
+
+      - name: Trace Browser Use through the scoped CDP gateway
+        run: npm run agent:compat
+        env:
+          OMNIBROWSER_AGENT_PYTHON: agent-runtime/.venv-${{ matrix.arch }}/bin/python
 
       - name: Build packaged application
         run: npm run package -- --arch=${{ matrix.arch }}
@@ -69,12 +85,18 @@ jobs:
           grep -q 'EnableEmbeddedAsarIntegrityValidation is Enabled' /tmp/omnibrowser-fuses.txt
           grep -q 'OnlyLoadAppFromAsar is Enabled' /tmp/omnibrowser-fuses.txt
           grep -q 'GrantFileProtocolExtraPrivileges is Disabled' /tmp/omnibrowser-fuses.txt
+          sidecar="$app_path/Contents/Resources/agent-host/agent-host"
+          test -x "$sidecar"
+          file -b "$sidecar" | grep -q "${{ matrix.arch == 'x64' && 'x86_64' || 'arm64' }}"
+          "$sidecar" --self-check
 
       - name: Report the virtual display
         run: system_profiler SPDisplaysDataType | grep -E 'Resolution|Looks like|Main Display' || true
 
       - name: Run Electron end-to-end suite
         run: npm run test:e2e:only
+        env:
+          OMNIBROWSER_REQUIRE_AGENT_E2E: '1'
 
       - name: Upload end-to-end evidence
         if: failure()

@@ -52,6 +52,17 @@ const api: OmniBrowserApi = {
     setCamera: (camera) => invoke(IPC_CHANNELS.workspaceSetCamera, { camera }),
     saveNow: () => invoke(IPC_CHANNELS.workspaceSaveNow)
   },
+  agents: {
+    list: () => invoke(IPC_CHANNELS.agentsList),
+    get: (browserId) => invoke(IPC_CHANNELS.agentsGet, { browserId }),
+    send: (browserId, instruction) => invoke(IPC_CHANNELS.agentsSend, { browserId, instruction }),
+    pause: (browserId) => invoke(IPC_CHANNELS.agentsPause, { browserId }),
+    resume: (browserId) => invoke(IPC_CHANNELS.agentsResume, { browserId }),
+    stop: (browserId) => invoke(IPC_CHANNELS.agentsStop, { browserId }),
+    getProvider: () => invoke(IPC_CHANNELS.agentsGetProvider),
+    saveProvider: (input) => invoke(IPC_CHANNELS.agentsSaveProvider, input),
+    testProvider: (input) => invoke(IPC_CHANNELS.agentsTestProvider, input)
+  },
   events: {
     subscribe: (listener) => {
       const handler = (_event: Electron.IpcRendererEvent, payload: OmniEvent) => listener(payload);

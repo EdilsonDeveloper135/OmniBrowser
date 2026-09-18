@@ -36,7 +36,12 @@
   "scripts": {
     "start": "electron-forge start",
     "package": "electron-forge package",
+    "package:test": "OMNIBROWSER_AGENT_RESOURCE_PATH=agent-runtime/test-stub OMNIBROWSER_SKIP_ADHOC_SIGN=1 electron-forge package",
     "make": "electron-forge make",
+    "agent:build": "agent-runtime/build.sh",
+    "agent:self-check": "python3 agent-runtime/agent_host.py --self-check",
+    "agent:test": "python3 -m unittest discover -s agent-runtime/tests -v",
+    "agent:compat": "node pocs/run-electron-poc.cjs agent",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "npm run test:unit",
@@ -47,9 +52,9 @@
     "test:poc:gestures": "node pocs/run-electron-poc.cjs gestures",
     "test:poc:popup": "node pocs/run-electron-poc.cjs popup",
     "test:poc:resources": "node pocs/run-electron-poc.cjs resources",
-    "test:e2e": "npm run package && npm run test:e2e:only",
+    "test:e2e": "npm run package:test && npm run test:e2e:only",
     "test:e2e:only": "playwright test",
-    "test:perf": "npm run package && playwright test --config playwright.perf.config.ts",
+    "test:perf": "npm run package:test && playwright test --config playwright.perf.config.ts",
     "test:all": "npm run verify && npm run test:poc && npm run test:e2e",
     "verify": "npm run typecheck && npm run lint && npm run test:unit",
     "bench": "vitest run --config vitest.bench.config.mts"
@@ -58,6 +63,7 @@
     "lucide-react": "1.46.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
+    "ws": "8.21.3",
     "zod": "4.6.5"
   },
   "devDependencies": {
@@ -73,6 +79,7 @@
     "@types/node": "24.13.5",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
+    "@types/ws": "8.18.1",
     "@vitest/coverage-v8": "5.0.1",
     "appdmg": "0.6.6",
     "css-loader": "7.1.5",

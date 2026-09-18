@@ -23,16 +23,18 @@ La diferencia esencial frente a una cuadrícula de iframes es el modelo de sesi�
 - suspensión manual que destruye el `WebContents` y lo reconstruye con la sesión correcta;
 - popups adoptados como tarjetas del mismo perfil, conservando `window.opener`, `postMessage` y `window.close`;
 - permisos denegados por defecto y descargas explícitas mediante el diálogo nativo de guardado;
+- un agente [Browser Use](https://github.com/browser-use/browser-use) por tarjeta, con chat propio, cola privada, Pausar/Reanudar/Detener y un proveedor OpenAI-compatible configurable: cada agente controla solo su tarjeta mediante una capacidad CDP limitada ([ADR 0005](docs/adr/0005-card-scoped-browser-use-agents.md));
 - DMG y ZIP mediante Electron Forge.
 
-No hay backend, cuenta OmniBrowser, telemetría, sincronización cloud ni auto-update.
+No hay backend, cuenta OmniBrowser, telemetría, sincronización cloud ni auto-update. Los agentes solo contactan con el proveedor de IA que configures.
 
 ## Requisitos de desarrollo
 
 - macOS 13+;
 - Node.js 24.21.0 (`.nvmrc`);
 - npm 11.19.0;
-- Xcode Command Line Tools.
+- Xcode Command Line Tools;
+- Python 3.12 para construir el sidecar de agentes (`npm run agent:build`), necesario para `npm run package` y `npm run make`.
 
 ```bash
 nvm use
@@ -45,15 +47,22 @@ El repositorio fija todas las versiones directas y compromete `package-lock.json
 ## Comandos
 
 ```bash
-npm run verify             # TypeScript, ESLint y 162 tests unitarios y de componentes
+npm run verify             # TypeScript, ESLint y tests unitarios y de componentes (Vitest)
 npm run test:poc           # almacenamiento, canvas, compuerta de gestos, popups y recursos
-npm run test:e2e           # package de producción + Playwright Electron
-npm run package            # genera OmniBrowser.app
+npm run test:e2e           # package de prueba + Playwright Electron
+npm run agent:test         # protocolo del sidecar de agentes (Python, sin dependencias)
+npm run agent:build        # congela el sidecar Browser Use con PyInstaller para la arquitectura nativa
+npm run agent:compat       # traza de compatibilidad CDP con Browser Use (requiere OMNIBROWSER_AGENT_PYTHON)
+npm run package            # genera OmniBrowser.app (requiere agent:build)
 npm run make               # genera DMG y ZIP con firma ad hoc local
 npm run test:all           # suite completa
 npm run test:perf          # observaciones de memoria, CPU, frames, IPC y guardado (no es un gate)
 npm run bench              # tiempos de las derivaciones puras con 500 browsers (no es un gate)
 ```
+
+La E2E completa del agente usa el sidecar de `npm run agent:build` y un modelo OpenAI-compatible falso en loopback; sin sidecar se omite. Detalles en [agent-runtime/README.md](agent-runtime/README.md).
+
+`npm start` también necesita `npm run agent:build` para que los agentes funcionen; sin él, el chat del agente lo indica. El paquete de prueba (`npm run package:test`, que ejecuta `npm run test:e2e`) se escribe en `out/test-stub/` y no puede ejecutar agentes; la aplicación que se usa es la de `out/OmniBrowser-darwin-<arch>/`, generada por `npm run package`.
 
 `npm run test:e2e:only` usa el bundle de `.webpack/<arch>` generado por `npm run package`; `npm start` lo reemplaza por el bundle de desarrollo, así que conviene volver a empaquetar antes de repetir solo las E2E. Las E2E escriben sus capturas en `test-results/visual/` y el POC de canvas en `test-results/poc/`; para reemplazar las evidencias versionadas de `docs/design/` o `docs/poc-results/` después de revisarlas, use `OMNIBROWSER_UPDATE_VISUAL_EVIDENCE=1` con `npm run test:e2e` o `npm run test:poc:canvas`. La captura del POC solo incluye las vistas nativas si la terminal tiene permiso de grabación de pantalla; sin él, el POC avisa y no reemplaza la evidencia.
 
@@ -91,6 +100,7 @@ React shell (omnibrowser://app)
               ├─ ProfileSessionManager
               ├─ BrowserRuntime
               ├─ SaveScheduler
+              ├─ AgentManager ─ ScopedCdpGateway ─ sidecar Browser Use (uno por tarea)
               └─ WebContentsView por tarjeta
                    └─ Session Chromium por perfil
 ```
@@ -101,6 +111,7 @@ El contenido remoto nunca recibe el preload del shell, Node.js, `ipcRenderer` ni
 - [ADR 0002: Persistencia atómica y recuperación ante corrupción](docs/adr/0002-atomic-persistence-and-corruption-recovery.md)
 - [ADR 0003: Composición nativa WebContentsView y oclusión](docs/adr/0003-single-window-canvas-layout-and-native-occlusion.md)
 - [ADR 0004: Compuerta de gestos y eventos de rueda](docs/adr/0004-gesture-gating-and-wheel-event-handling.md)
+- [ADR 0005: Agentes Browser Use aislados por tarjeta](docs/adr/0005-card-scoped-browser-use-agents.md)
 - [Modelo de seguridad](docs/security-model.md)
 
 ## Datos locales y privacidad
@@ -112,6 +123,7 @@ En una app empaquetada, el workspace y los datos de Chromium viven bajo el direc
 - `workspace.v1-backup.json` conserva una copia única del archivo V1 original antes de la primera escritura V2.
 - Un archivo ilegible, o creado por una versión más reciente, nunca se sobrescribe: se conserva como `workspace.corrupt-*.json` o `workspace.future-v<N>-*.json` y la app avisa con su nombre.
 - Chromium conserva cookies y almacenamiento web dentro de sus particiones persistentes.
+- `agents/<browserId>.json` guarda la conversación y la actividad del agente de una tarjeta persistente (sin claves, capacidades CDP, DOM ni capturas); los agentes Private viven solo en memoria. `agent-provider.json` guarda la URL, el modelo y la clave del proveedor cifrada con el llavero del sistema; con «Recordar la clave en este Mac» desmarcado, o si macOS deniega el llavero, la clave vive solo en memoria hasta cerrar la app y el archivo guarda solo la URL y el modelo.
 - OmniBrowser no implementa un gestor de contraseñas ni exporta cookies o credenciales.
 
 Las URLs pueden contener información sensible; trate `workspace.json` como datos privados del usuario. Un perfil Private evita el log propio y usa una sesión en memoria, pero no pretende ser un modo antiforense frente a un atacante con acceso al equipo. Una descarga que el usuario acepte puede permanecer en disco aunque se haya originado en un perfil Private; OmniBrowser no guarda una ruta ni un historial propio de descargas. Mientras el diálogo de guardado está abierto, Chromium ya escribe los bytes en un archivo temporal oculto de la carpeta Descargas; se elimina al salir de la app, pero un cierre forzado en ese momento podría dejarlo.
@@ -127,6 +139,7 @@ Las URLs pueden contener información sensible; trate `workspace.json` como dato
 - Un sitio puede detectar Electron, bloquear navegadores embebidos o exigir reautenticación. Compartir correctamente la partición no garantiza que un proveedor acepte su flujo OAuth.
 - La prueba manual con Google debe hacerse únicamente con una cuenta de prueba autorizada y nunca forma parte de CI.
 - La firma Developer ID y notarización requieren secretos del mantenedor; los builds locales reciben una firma ad hoc posterior a los fuses y no se presentan como artefactos notarizados. Una release usa `OMNIBROWSER_MAC_SIGN_IDENTITY` con una identidad Developer ID instalada y sigue el checklist de publicación.
+- Cada build local con firma ad hoc es una aplicación nueva para el llavero de macOS: la primera vez que guarda o usa la clave del proveedor (o cookies cifradas), macOS pide la contraseña de inicio de sesión del Mac para la entrada «OmniBrowser Safe Storage». La contraseña la recibe macOS, no OmniBrowser; «Permitir siempre» la recuerda para ese build. Si se deniega, el agente usa la clave solo durante la sesión y el diálogo explica cómo guardarla después; desmarcar «Recordar la clave en este Mac» evita el llavero por completo.
 
 ## Evidencia del MVP
 
@@ -136,6 +149,7 @@ Las URLs pueden contener información sensible; trate `workspace.json` como dato
 - [Auditoría de dependencias y hardening](docs/security-audit.md)
 - [Auditoría técnica 2026-09: hallazgos, correcciones y mediciones](docs/engineering-audit.md)
 - [Hardening posterior al canvas espacial: dependencias, gestos, descargas y rendimiento](docs/hardening-2026-09.md)
+- [Auditoría de los agentes por tarjeta: hallazgos, correcciones y verificación](docs/agent-audit-2026-09.md)
 - [Checklist de release](docs/release-checklist.md)
 
 Los números de memoria publicados son observaciones de una máquina concreta, no promesas de consumo ni benchmarks generalizables.

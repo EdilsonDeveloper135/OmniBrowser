@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WorkspaceCanvas, type WorkspaceCanvasProps } from '../../../src/renderer/components/WorkspaceCanvas';
 import type { BrowserSnapshot, ProfileRecord, WorkspaceSnapshot } from '../../../src/shared/schemas';
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
+  commitLayoutMock.mockClear();
 });
 
 class MockResizeObserver {
@@ -16,11 +18,28 @@ class MockResizeObserver {
 
 globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
 
+const commitLayoutMock = vi.fn(async () => {});
+
 (window as unknown as { omniBrowser: unknown }).omniBrowser = {
   workspace: {
-    commitLayout: vi.fn(async () => {})
+    commitLayout: commitLayoutMock,
+    setCamera: vi.fn(async () => {})
   }
 };
+
+function domRect(x: number, y: number, width: number, height: number): DOMRect {
+  return {
+    x,
+    y,
+    width,
+    height,
+    top: y,
+    right: x + width,
+    bottom: y + height,
+    left: x,
+    toJSON: () => ({ x, y, width, height })
+  } as DOMRect;
+}
 
 const mockProfile: ProfileRecord = {
   id: 'profile-1',
@@ -84,6 +103,11 @@ function createDefaultProps(overrides: Partial<WorkspaceCanvasProps> = {}): Work
     snapshot,
     noticeId: null,
     modalActive: false,
+    openAgentPanelIds: new Set(),
+    agentSummaries: new Map(),
+    agentSnapshots: new Map(),
+    agentLoadingIds: new Set(),
+    agentErrors: new Map(),
     selectedBrowserIds: new Set(['b1']),
     fullscreenBrowserId: null,
     locateRequest: null,
@@ -112,6 +136,12 @@ function createDefaultProps(overrides: Partial<WorkspaceCanvasProps> = {}): Work
     onCreateStack: vi.fn(async () => {}),
     onSelectStackMember: vi.fn(async () => {}),
     onUnstack: vi.fn(async () => {}),
+    onAgentPanelOpenChange: vi.fn(),
+    onAgentSend: vi.fn(async () => {}),
+    onAgentPause: vi.fn(async () => {}),
+    onAgentResume: vi.fn(async () => {}),
+    onAgentStop: vi.fn(async () => {}),
+    onOpenAgentSettings: vi.fn(),
     onInteractionChange: vi.fn(),
     onViewportChange: vi.fn(),
     ...overrides
@@ -165,5 +195,92 @@ describe('WorkspaceCanvas component', () => {
     rerender(<WorkspaceCanvas {...props} modalActive={true} />);
 
     document.body.removeChild(mockBackdrop);
+  });
+
+  it('expands a narrow card to the agent split minimum without moving it', () => {
+    const props = createDefaultProps();
+    const { container } = render(<WorkspaceCanvas {...props} />);
+    const firstCard = container.querySelector<HTMLElement>('[data-browser-id="b1"]');
+    const agentButton = firstCard?.querySelector<HTMLButtonElement>('button[aria-label^="Abrir agente"]');
+    expect(agentButton).not.toBeNull();
+
+    fireEvent.click(agentButton!);
+
+    expect(props.onAgentPanelOpenChange).toHaveBeenCalledWith('b1', true);
+    expect(props.onUpdateBrowserRects).toHaveBeenCalledTimes(1);
+    const updates = vi.mocked(props.onUpdateBrowserRects).mock.calls[0]?.[0];
+    expect(updates?.get('b1')).toEqual({ x: 50, y: 50, width: 680, height: 400 });
+  });
+
+  it('also widens a viewport-pinned card enough for the browser/chat split', async () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getRect() {
+      const element = this as HTMLElement;
+      if (element.classList.contains('canvas-viewport')) return domRect(0, 0, 1200, 800);
+      return domRect(0, 0, 0, 0);
+    });
+    const browser = createMockBrowser('b1', {
+      worldRect: { x: 50, y: 50, width: 600, height: 400 },
+      pin: { sidebar: false, viewport: { x: 0.1, y: 0.1, width: 0.25, height: 0.6 } }
+    });
+    const props = createDefaultProps({ snapshot: createMockSnapshot([browser]) });
+    const { container } = render(<WorkspaceCanvas {...props} />);
+    await waitFor(() => expect(props.onViewportChange).toHaveBeenCalledWith({ width: 1200, height: 800 }));
+
+    const agentButton = container.querySelector<HTMLButtonElement>('button[aria-label^="Abrir agente"]');
+    fireEvent.click(agentButton!);
+
+    expect(props.onSetViewportPin).toHaveBeenCalledWith('b1', {
+      x: 0.1,
+      y: 0.1,
+      width: 680 / 1200,
+      height: 0.6
+    });
+  });
+
+  it('keeps agent panels independently open for multiple browser cards', () => {
+    const props = createDefaultProps({ openAgentPanelIds: new Set(['b1', 'b2']) });
+    const { container } = render(<WorkspaceCanvas {...props} />);
+
+    expect(container.querySelectorAll('.agent-chat-panel')).toHaveLength(2);
+    expect(container.querySelectorAll('[data-browser-native-pane]')).toHaveLength(2);
+  });
+
+  it('gives the page only the left column of a card with its agent panel open, without measuring the DOM', async () => {
+    const measured = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getRect() {
+      const element = this as HTMLElement;
+      if (element.classList.contains('canvas-viewport')) return domRect(0, 0, 1200, 800);
+      return domRect(0, 0, 0, 0);
+    });
+    const props = createDefaultProps({ openAgentPanelIds: new Set(['b1']) });
+    render(<WorkspaceCanvas {...props} />);
+
+    await waitFor(() => {
+      const lastBatch = commitLayoutMock.mock.calls.at(-1)?.[0];
+      const first = lastBatch?.items.find((item: { browserId: string }) => item.browserId === 'b1');
+      // Body 600 - 2×1 border - 2×16 inset = 566 wide; the chat column keeps 312 of it.
+      expect(first?.screenBounds).toEqual({ x: 67, y: 89, width: 254, height: 344 });
+      expect(first?.visible).toBe(true);
+    });
+    expect(measured.mock.contexts.some((element) => (element as HTMLElement).dataset.browserNativePane)).toBe(false);
+  });
+
+  it('keeps a locked card at its size and yields a pane too narrow for the page to the chat', async () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getRect() {
+      const element = this as HTMLElement;
+      if (element.classList.contains('canvas-viewport')) return domRect(0, 0, 1200, 800);
+      return domRect(0, 0, 0, 0);
+    });
+    const locked = createMockBrowser('b1', { worldRect: { x: 50, y: 50, width: 400, height: 400 }, positionLocked: true });
+    const props = createDefaultProps({ snapshot: createMockSnapshot([locked]) });
+    const { container, rerender } = render(<WorkspaceCanvas {...props} />);
+    fireEvent.click(container.querySelector<HTMLButtonElement>('button[aria-label^="Abrir agente"]')!);
+    expect(props.onUpdateBrowserRects).not.toHaveBeenCalled();
+    expect(props.onAgentPanelOpenChange).toHaveBeenCalledWith('b1', true);
+
+    rerender(<WorkspaceCanvas {...props} openAgentPanelIds={new Set(['b1'])} />);
+    await waitFor(() => {
+      const lastBatch = commitLayoutMock.mock.calls.at(-1)?.[0];
+      expect(lastBatch?.items.find((item: { browserId: string }) => item.browserId === 'b1')?.visible).toBe(false);
+    });
   });
 });

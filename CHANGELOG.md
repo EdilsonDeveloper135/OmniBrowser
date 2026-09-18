@@ -4,6 +4,12 @@ Todos los cambios relevantes de OmniBrowser se documentarán en este archivo. El
 
 ## [Unreleased]
 
+### Added
+
+- Un agente Browser Use por tarjeta ([ADR 0005](docs/adr/0005-card-scoped-browser-use-agents.md)): panel de chat dentro de la tarjeta, cola privada de hasta 20 instrucciones, Pausar/Reanudar/Detener, reanudación de tareas interrumpidas con su progreso, contexto de la conversación para las instrucciones de seguimiento y proveedor OpenAI-compatible con clave cifrada.
+- Sidecar Python congelado con PyInstaller (`npm run agent:build`), pruebas de su protocolo (`npm run agent:test`) y traza de compatibilidad CDP con la versión fijada de Browser Use (`npm run agent:compat`).
+- E2E de una tarea completa del agente con el sidecar congelado y un modelo local.
+
 ### Fixed
 
 - Un workspace ilegible o de un esquema más reciente ya no se sobrescribe: se conserva y se avisa con el nombre del archivo.
@@ -27,6 +33,8 @@ Todos los cambios relevantes de OmniBrowser se documentarán en este archivo. El
 
 ### Security
 
+- La pasarela CDP de cada agente aplica la allowlist de navegación de la tarjeta a `Page.navigate` (que no emite `will-navigate`) y el runtime detiene cualquier navegación iniciada por el navegador hacia otro esquema; también deniega `Page.close`, `Page.crash`, el borrado del historial y `Network.loadNetworkResource`.
+- La clave del proveedor de IA solo se envía al origen para el que se guardó.
 - Se conserva la lista por defecto de clases USB protegidas.
 - Los diálogos de protocolo externo tienen límite y enfriamiento, y se activa `safeDialogs`.
 - Hay bloqueo de instancia única y `userData` separado para desarrollo.
@@ -38,6 +46,13 @@ Todos los cambios relevantes de OmniBrowser se documentarán en este archivo. El
 
 ### Changed
 
+- Los agentes capturan la página aunque su tarjeta esté fuera de pantalla, tapada, minimizada o con la ventana oculta, sin que la página observe un cambio de visibilidad; sus clics no seleccionan ni elevan la tarjeta, y el modelo recibe la URL y el título actuales tras cada navegación.
+- `npm run package` copia el sidecar de la arquitectura empaquetada y explica cómo construirlo si falta; el CI construye y verifica el sidecar.
+- La prueba del proveedor usa el límite de salida que Browser Use aplica en cada paso (4096 tokens) y espera hasta 60 s: acepta modelos de razonamiento detrás de routers OpenAI-compatibles y explica si el modelo agota el límite o devuelve solo su razonamiento.
+- Las capturas del agente reintentan los frames que Chromium pierde mientras una navegación cambia de superficie (`UnknownVizError`), y la respuesta final del agente llega en el idioma de la instrucción.
+- El proveedor del agente ya no depende del llavero de macOS. «Recordar la clave en este Mac» (activado por defecto) avisa antes de guardar de que macOS pedirá la contraseña del Mac y de que la recibe macOS, no OmniBrowser. Si se desmarca, o si macOS deniega el acceso, la clave se usa solo durante la sesión sin escribirse en disco, el diálogo explica cómo guardarla después, y la URL y el modelo se recuerdan.
+- El llavero ya no se lee al arrancar, solo cuando una tarea o una prueba necesita la clave: macOS deja de pedir la contraseña en cada inicio de un build nuevo, y una denegación ya no aparta `agent-provider.json` como si estuviera corrupto ni hace fallar una tarea tras otra.
+- `npm run package:test` escribe en `out/test-stub/`: el paquete de E2E, que no puede ejecutar agentes, ya no reemplaza la aplicación real de `out/`. En desarrollo, sin `npm run agent:build`, el chat del agente pide construir el runtime en lugar de probar el Python del sistema.
 - Los bundles de producción se minifican y ya no incluyen source maps.
 - Menos IPC, `setBounds` y escrituras durante la actividad de las páginas y las interacciones del canvas.
 - Pan y zoom del canvas por teclado.

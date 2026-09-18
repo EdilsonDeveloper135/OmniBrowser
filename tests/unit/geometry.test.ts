@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  AGENT_PANEL_WIDTH,
   CARD_BORDER_WIDTH,
   CARD_CHROME_OVERFLOW,
   CARD_CONTENT_INSET,
@@ -12,6 +13,8 @@ import {
   ZOOM_STEP
 } from '../../src/shared/constants';
 import {
+  agentSplitPaneWidth,
+  cardBodyWidth,
   clampCamera,
   clampWorldRect,
   boundsForWorldRects,
@@ -55,7 +58,8 @@ describe('canvas geometry', () => {
   it('keeps geometry constants in sync with the stylesheet that draws the cards', () => {
     const css = readFileSync(path.join(process.cwd(), 'src', 'renderer', 'styles.css'), 'utf8');
     expect(css).toMatch(new RegExp(`\\.browser-card \\{[^}]*border: ${CARD_BORDER_WIDTH}px solid`));
-    expect(css).toContain(`.browser-content-slot { position: absolute; inset: ${CARD_CONTENT_INSET.top}px ${CARD_CONTENT_INSET.right}px ${CARD_CONTENT_INSET.bottom}px;`);
+    expect(css).toContain(`.browser-card-body { position: absolute; inset: ${CARD_CONTENT_INSET.top}px ${CARD_CONTENT_INSET.right}px ${CARD_CONTENT_INSET.bottom}px;`);
+    expect(css).toContain(`.browser-card-body.has-agent-panel { grid-template-columns: minmax(0, 1fr) min(${AGENT_PANEL_WIDTH}px, 100%); }`);
     expect(CARD_CONTENT_INSET.left).toBe(CARD_CONTENT_INSET.right);
     expect(css).toContain(`.resize-ne { top: -${CARD_CHROME_OVERFLOW}px; right: -${CARD_CHROME_OVERFLOW}px;`);
     expect(css).toContain(`.minimap { position: absolute; right: ${MINIMAP_MARGIN}px; bottom: ${MINIMAP_MARGIN}px; width: ${MINIMAP_SIZE.width}px; height: ${MINIMAP_SIZE.height}px;`);
@@ -228,5 +232,22 @@ describe('native view layout', () => {
     ], camera, viewport);
     expect(layout.items.find((item) => item.browserId === 'visible')?.visible).toBe(true);
     expect(layout.items.find((item) => item.browserId === 'collapsed')?.visible).toBe(false);
+  });
+
+  it('splits a card body between the page and the agent chat like the stylesheet does', () => {
+    expect(cardBodyWidth(680)).toBe(646);
+    expect(agentSplitPaneWidth(646)).toBe(646 - AGENT_PANEL_WIDTH);
+    expect(agentSplitPaneWidth(AGENT_PANEL_WIDTH - 20)).toBe(0);
+    const camera = { panX: 10, panY: 20, zoom: 0.5 };
+    const full = projectWorldRect({ x: 0, y: 0, width: 680, height: 400 }, camera, { x: 0, y: 0 });
+    const split = projectWorldRect({ x: 0, y: 0, width: 680, height: 400 }, camera, { x: 0, y: 0 }, AGENT_PANEL_WIDTH);
+    expect(split).toEqual({ ...full, width: full.width - AGENT_PANEL_WIDTH * 0.5 });
+  });
+
+  it('keeps the semantic-zoom threshold for a world card whose chat column is reserved', () => {
+    const rect = { x: 0, y: 0, width: 700, height: 400 };
+    const reserved = card('agent', 1, rect, { contentReservedRight: AGENT_PANEL_WIDTH });
+    expect(computeCanvasLayout([reserved], { panX: 0, panY: 0, zoom: 1 }, viewport).items[0]?.visible).toBe(true);
+    expect(computeCanvasLayout([reserved], { panX: 0, panY: 0, zoom: 0.49 }, viewport).items[0]?.visible).toBe(false);
   });
 });

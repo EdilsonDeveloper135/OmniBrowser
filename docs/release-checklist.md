@@ -4,8 +4,12 @@
 
 - [ ] La versión y el changelog están actualizados.
 - [ ] `npm ci` se ejecuta con Node 24.21.0 (`.nvmrc`) y el lockfile no cambia.
-- [ ] `npm run verify` pasa (TypeScript, ESLint y 162 tests unitarios y de componentes con Vitest).
-- [ ] Todos los registros de decisiones arquitectónicas en `docs/adr/` ([ADR 0001 a 0004](adr/)) están al día y reflejan el estado del código.
+- [ ] `npm run verify` pasa (TypeScript, ESLint y la suite completa de tests unitarios y de componentes con Vitest).
+- [ ] Todos los registros de decisiones arquitectónicas en `docs/adr/` ([ADR 0001 a 0005](adr/)) están al día y reflejan el estado del código.
+- [ ] `npm run agent:test` pasa y `npm run agent:build` produce el sidecar nativo de la arquitectura del runner.
+- [ ] El ejecutable congelado pasa `--self-check` con `browser-use==0.13.10` y `cdp-use==1.4.5`.
+- [ ] `npm run agent:compat` pasa con el entorno Python del sidecar (`OMNIBROWSER_AGENT_PYTHON=agent-runtime/.venv-<arch>/bin/python`).
+- [ ] La E2E `an agent completes a task in its own card…` se ejecuta (no se omite) y pasa.
 - [ ] Los cinco POC pasan en arm64 y x64, con captura compuesta del canvas; `docs/poc-results/` solo cambia si la captura se revisó.
 - [ ] `npm run test:e2e` pasa en arm64 y x64.
 - [ ] `npm audit --omit=dev` no reporta vulnerabilidades runtime.
@@ -30,6 +34,8 @@
 - [ ] Los fuses del binario empaquetado se inspeccionaron.
 - [ ] `Info.plist` declara macOS 13.0 mínimo y el bundle ID esperado.
 - [ ] Dependencias directas y alertas Dependabot se revisaron.
+- [ ] La prueba CDP con dos tarjetas demuestra que cada worker solo enumera su target y que cookies, tabs y targets ajenos se rechazan.
+- [ ] Las conversaciones Private no crean archivos y los registros persistentes omiten claves, tokens CDP, DOM y capturas.
 - [ ] Se revisó `docs/security-audit.md`; cualquier hallazgo de toolchain aceptado tiene justificación y seguimiento.
 
 ## Firma y notarización
@@ -38,6 +44,8 @@
 - [ ] `OMNIBROWSER_MAC_SIGN_IDENTITY` identifica ese certificado; no se usa la firma ad hoc de desarrollo.
 - [ ] La identidad, Team ID y credenciales notariales provienen de secretos, nunca del repositorio.
 - [ ] Se generan DMG y ZIP arm64/x64 desde runners nativos.
+- [ ] `Contents/Resources/agent-host/agent-host` existe fuera de `app.asar`, coincide con la arquitectura y arranca sin Python del sistema.
+- [ ] Todos los Mach-O del sidecar se firman antes del sello final de `OmniBrowser.app`.
 - [ ] `codesign --verify --deep --strict --verbose=2` pasa.
 - [ ] `spctl --assess --type execute --verbose=2` pasa.
 - [ ] Apple acepta la notarización y el ticket se grapa al `.app`/DMG.

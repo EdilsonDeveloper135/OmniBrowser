@@ -102,6 +102,56 @@ Los gestos que nacen dentro de una superficie Chromium requieren poder cancelar 
 
 Por debajo de 50 %, Chromium se oculta y React representa tarjetas semánticas. Seleccionar una centra la tarjeta, cambia a 72 % y reconstruye/enseña su vista si corresponde.
 
+## Agentes Browser Use por browser
+
+Cada `BrowserRecord.id` es también el `browserId` estable de un agente. `AgentManager` vive en main y materializa una
+relación exclusiva `browserId → agentId → chatSessionId → browserSession`; serializa las operaciones de cada browser,
+admite una sola tarea activa por tarjeta, como máximo 20 instrucciones en su cola privada y cuatro tareas activas
+globales. Los registros se crean al usar el agente de una tarjeta (abrir el panel solo crea un borrador en memoria), de
+modo que un workspace con cientos de tarjetas no escribe un archivo por tarjeta al arrancar. Si el almacén de agentes no
+se puede abrir, los agentes quedan desactivados con un aviso y el resto del workspace arranca con normalidad.
+
+`BrowserRuntime` entrega descriptores efímeros `{ browserId, profileId, contentsId, targetId, runtimeEpoch, contents }`.
+Cada recreación incrementa `runtimeEpoch`. `ScopedCdpGateway` adjunta el debugger únicamente a ese `WebContents`,
+publica en loopback una capacidad aleatoria que solo representa ese target y filtra los comandos CDP:
+
+- presenta un navegador virtual de una sola página: `Target.*` se virtualiza y anuncia los cambios de URL y título
+  (`Target.targetInfoChanged`) que Browser Use usa para describir la página al modelo;
+- aplica a `Page.navigate` la misma allowlist que la tarjeta (`https:`, `http:`, `about:blank`), porque una navegación
+  iniciada por CDP no emite `will-navigate`; `BrowserRuntime` detiene además cualquier navegación de ese tipo hacia otro
+  esquema y abandona el documento si llegara a confirmarse;
+- deniega cookies, descargas, archivos locales (`Network.loadNetworkResource`, `DOM.setFileInputFiles`), pestañas,
+  `Page.close`, `Page.crash` y el borrado del historial; `Page.bringToFront` no eleva la tarjeta;
+- responde `Page.captureScreenshot` con `webContents.capturePage({ stayHidden: true })`: Chromium no produce frames para
+  una vista oculta, así que la captura CDP nunca respondería con la tarjeta fuera de pantalla, tapada, minimizada o con la
+  ventana oculta, y la página no observa ningún cambio de visibilidad. Mientras una navegación cambia la superficie del
+  compositor, `capturePage` pierde uno o dos frames (`UnknownVizError` o imagen vacía); la pasarela los reintenta
+  durante unos 400 ms, porque Browser Use captura justo después de navegar;
+- marca los comandos `Input.*` como entrada sintética, de modo que un clic del agente no selecciona ni eleva su tarjeta.
+
+El sidecar Browser Use recibe la capacidad y la configuración del modelo por stdin JSONL; ningún dato de control pasa por
+React ni por argumentos del proceso. Todos los eventos vuelven etiquetados y se descartan si su epoch o IDs ya no
+coinciden. Cada tarea nueva recibe como contexto los últimos turnos de la conversación de su tarjeta, y una tarea
+interrumpida, los pasos que ya había completado. Los errores del sidecar llegan con un código que main traduce al
+español; del diagnóstico solo se muestra el tipo de excepción, nunca contenido de la página.
+
+El panel React divide el cuerpo de la tarjeta: la superficie nativa ocupa la columna izquierda y el chat la derecha
+(`min(312px, 100%)`). Al abrirlo, una tarjeta libre se amplía hasta 680 unidades; una bloqueada o fijada al viewport
+conserva su tamaño y, si la columna de la página queda por debajo de 160 unidades, oculta su vista nativa. Los límites de
+la vista se calculan con la misma geometría que el resto de tarjetas (`agentSplitPaneWidth`), sin medir el DOM en cada
+frame. El panel intercala conversación y actividad en orden, muestra cola, estado y controles Pause/Resume/Stop, y
+cerrarlo no detiene el agente. El renderer sigue el estado de cada tarjeta por `agentId` y secuencia, así que el agente
+nuevo que recibe una tarjeta al cambiar de perfil sustituye a la conversación anterior.
+
+Los registros persistentes se guardan fuera de `workspace.json` en `userData/agents/<browserId>.json`; los Private
+solo existen en memoria. La clave del proveedor se cifra con Electron `safeStorage` y solo se envía al origen para el que
+se guardó: usar otro endpoint exige escribirla de nuevo. El llavero no se lee al arrancar, sino cuando una tarea o una
+prueba necesita la clave. Si la persona desmarca «Recordar la clave en este Mac» o macOS deniega el llavero, la clave
+queda solo en memoria de main hasta cerrar la app y `agent-provider.json` guarda únicamente la URL y el modelo. Una tarea viva durante cierre, suspensión, cambio de perfil,
+caída de la página o destrucción del target queda pausada como interrumpida y solo continúa por acción explícita, con un
+worker y una capacidad nuevos. `npm run agent:compat` ejecuta la traza de compatibilidad con la versión fijada de Browser
+Use. Véase [ADR 0005](adr/0005-card-scoped-browser-use-agents.md).
+
 ## Persistencia
 
 `WorkspaceStore` mantiene:
@@ -152,7 +202,7 @@ Mientras el diálogo de guardado espera respuesta, Chromium ya descarga en un te
 
 ## Contrato IPC
 
-La superficie pública se limita a `bootstrap`, perfiles, navegadores, workspace y una suscripción de eventos. Todos los argumentos cruzan esquemas Zod en main. El handler rechaza cualquier sender cuyo `webContents` o frame principal no sea el shell.
+La superficie pública se limita a `bootstrap`, perfiles, navegadores, workspace, agentes y una suscripción de eventos. Todos los argumentos cruzan esquemas Zod en main. El namespace `agents` solo acepta `browserId`, instrucciones y configuración del proveedor; no expone CDP ni credenciales. El handler rechaza cualquier sender cuyo `webContents` o frame principal no sea el shell.
 
 Cada handler responde con un resultado serializable `{ ok: true, value }` o `{ ok: false, error: { code, message } }`. Las entradas inválidas y los errores de dominio esperados (URL no permitida, navegador inexistente, nombre duplicado) llegan al shell como mensajes en español sin registrar un stack en main. Solo los errores inesperados se registran, y la UI recibe un mensaje genérico. El preload convierte los fallos en `Error` con el mensaje ya localizado.
 
@@ -169,6 +219,7 @@ Para un análisis a fondo de los fundamentos y alternativas evaluadas, consulte:
 - [ADR 0002: Persistencia atómica en disco y recuperación ante corrupción](adr/0002-atomic-persistence-and-corruption-recovery.md)
 - [ADR 0003: Composición nativa WebContentsView en ventana única y gestión de oclusores](adr/0003-single-window-canvas-layout-and-native-occlusion.md)
 - [ADR 0004: Política de compuerta de gestos y gestión de eventos de rueda no cancelables](adr/0004-gesture-gating-and-wheel-event-handling.md)
+- [ADR 0005: agentes Browser Use aislados por tarjeta](adr/0005-card-scoped-browser-use-agents.md)
 
 ## Rendimiento
 

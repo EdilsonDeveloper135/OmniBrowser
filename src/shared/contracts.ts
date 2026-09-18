@@ -1,4 +1,10 @@
 import type {
+  AgentChatSnapshot,
+  AgentProviderInput,
+  AgentProviderPublic,
+  AgentProviderTestResult,
+  AgentSummary,
+  AgentTimelineEvent,
   BrowserSnapshot,
   Camera,
   LayoutBatch,
@@ -14,7 +20,9 @@ export type OmniEvent =
   | { type: 'native-browser-click'; browserId: string; shiftKey: boolean }
   | { type: 'native-browser-escape'; browserId: string }
   | { type: 'notice'; level: 'info' | 'warning' | 'error'; message: string }
-  | { type: 'save-status'; status: WorkspaceSnapshot['saveStatus'] };
+  | { type: 'save-status'; status: WorkspaceSnapshot['saveStatus'] }
+  | { type: 'agent-state'; summary: AgentSummary }
+  | { type: 'agent-event'; event: AgentTimelineEvent };
 
 export interface OmniBrowserApi {
   bootstrap(): Promise<WorkspaceSnapshot>;
@@ -57,6 +65,17 @@ export interface OmniBrowserApi {
     commitLayout(layout: LayoutBatch): Promise<void>;
     setCamera(camera: Camera): Promise<void>;
     saveNow(): Promise<void>;
+  };
+  agents: {
+    list(): Promise<AgentSummary[]>;
+    get(browserId: string): Promise<AgentChatSnapshot>;
+    send(browserId: string, instruction: string): Promise<AgentChatSnapshot>;
+    pause(browserId: string): Promise<AgentChatSnapshot>;
+    resume(browserId: string): Promise<AgentChatSnapshot>;
+    stop(browserId: string): Promise<AgentChatSnapshot>;
+    getProvider(): Promise<AgentProviderPublic>;
+    saveProvider(input: AgentProviderInput): Promise<AgentProviderPublic>;
+    testProvider(input: AgentProviderInput): Promise<AgentProviderTestResult>;
   };
   events: {
     subscribe(listener: (event: OmniEvent) => void): () => void;

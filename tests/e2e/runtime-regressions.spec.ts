@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -18,6 +18,9 @@ const mainEntry = path.join('.webpack', process.arch, 'main', 'index.js');
 // work that starts with the window (restoring the selected card) has already finished.
 const slowShellEntry = path.join('tests', 'e2e', 'fixtures', 'slow-shell-main.cjs');
 const userDataDirectories: string[] = [];
+// The frozen Browser Use sidecar from `npm run agent:build`; the agent test is skipped without it unless CI requires it.
+const agentHostPath = process.env.OMNIBROWSER_AGENT_HOST_PATH
+  ?? path.join(repositoryRoot, 'agent-runtime', 'dist', process.arch, 'agent-host', 'agent-host');
 
 let server: Server;
 let origin = '';
@@ -92,10 +95,10 @@ function launchEnvironment(userData: string, extra: Record<string, string> = {})
   return { ...inherited, NODE_ENV: 'production', OMNIBROWSER_E2E: '1', OMNIBROWSER_E2E_USER_DATA: userData, ...extra };
 }
 
-async function launchApp(userData: string, options: { entry?: string; env?: Record<string, string> } = {}): Promise<Launched> {
+async function launchApp(userData: string, options: { entry?: string; env?: Record<string, string>; args?: string[] } = {}): Promise<Launched> {
   const app = await electron.launch({
     executablePath: electronExecutable as unknown as string,
-    args: [options.entry ?? mainEntry],
+    args: [options.entry ?? mainEntry, ...(options.args ?? [])],
     cwd: repositoryRoot,
     env: launchEnvironment(userData, options.env),
     timeout: 30_000
@@ -273,6 +276,9 @@ test.beforeAll(async () => {
       case '/slow':
         setTimeout(() => response.end(page('Slow')), 2500);
         return;
+      case '/agent-task':
+        response.end(page('Agent task', '<p>Pulsa el botón para continuar.</p><button id="continue" onclick="document.title = \'Clicked\'">Continuar</button>'));
+        return;
       case '/tall':
         response.end(page('Tall', '<div style="height:6000px;background:linear-gradient(#fff,#2f81f7)"></div>'));
         return;
@@ -344,6 +350,187 @@ test('native views stay aligned with their cards through pan, wheel, drag and re
   await expectNativeViewsAligned(launched, 2);
   expect(mainProcessNoise(launched.output)).toEqual([]);
   await closeApp(launched);
+});
+
+test('the per-card agent panel expands the card and never sits below its native browser surface', async () => {
+  const launched = await launchApp(newUserData(seededWorkspace([{
+    x: 20,
+    y: 20,
+    width: 500,
+    height: 420,
+    url: `${origin}/one?agent-panel=1`
+  }])));
+  try {
+    const browserId = (await snapshot(launched.shell)).browsers[0]!.id;
+    const card = launched.shell.locator(`[data-browser-id="${browserId}"]`);
+    await card.getByRole('button', { name: /^Abrir agente/ }).click();
+    const panel = card.locator('.agent-chat-panel');
+    await expect(panel).toBeVisible();
+
+    await expect.poll(async () => (await card.boundingBox())?.width ?? 0).toBeGreaterThanOrEqual(680);
+    await expectNativeViewsAligned(launched, 1);
+    const split = await launched.shell.evaluate((id) => {
+      const pane = document.querySelector<HTMLElement>(`[data-browser-native-pane="${id}"]`)!.getBoundingClientRect();
+      const chat = document.querySelector<HTMLElement>(`[data-agent-browser-id="${id}"]`)!.getBoundingClientRect();
+      return { paneRight: pane.right, chatLeft: chat.left, chatWidth: chat.width };
+    }, browserId);
+    expect(split.paneRight).toBeLessThanOrEqual(split.chatLeft + 1);
+    expect(split.chatWidth).toBeGreaterThanOrEqual(311);
+
+    // A successful click proves the React controls are not covered by the native WebContentsView.
+    await panel.getByRole('button', { name: 'Configurar proveedor del agente' }).click();
+    await expect(launched.shell.getByRole('dialog', { name: 'Proveedor del agente' })).toBeVisible();
+    await launched.shell.getByRole('button', { name: 'Cerrar configuración del proveedor' }).click();
+
+    await panel.getByRole('button', { name: 'Cerrar panel del agente' }).click();
+    await expect(panel).toHaveCount(0);
+    expect((await card.boundingBox())?.width ?? 0).toBeGreaterThanOrEqual(680);
+    await expectNativeViewsAligned(launched, 1);
+  } finally {
+    await closeApp(launched);
+  }
+});
+
+/**
+ * A minimal OpenAI-compatible model: it clicks the button Browser Use lists in the page state, then reports done. calls
+ * records the Authorization header of every request.
+ */
+async function startFakeModel(): Promise<{ url: string; calls: string[]; close: () => Promise<void> }> {
+  const calls: string[] = [];
+  const server = createServer((request, response) => {
+    let body = '';
+    request.setEncoding('utf8');
+    request.on('data', (chunk: string) => { body += chunk; });
+    request.on('end', () => {
+      const payload = JSON.parse(body) as { model: string; messages: unknown[] };
+      calls.push(request.headers.authorization ?? '');
+      // Only the current page state counts: the system prompt also contains example element indexes.
+      const last = payload.messages.at(-1) as { content: string | Array<{ type: string; text?: string }> };
+      const text = typeof last.content === 'string' ? last.content : last.content.map((part) => part.text ?? '').join('\n');
+      const state = /<browser_state>[\s\S]*<\/browser_state>/.exec(text)?.[0] ?? '';
+      const button = /\[(\d+)\]<button/.exec(state)?.[1];
+      const action = calls.length === 1 && button
+        ? [{ click: { index: Number(button) } }]
+        : [{ done: { text: 'Botón pulsado en la tarjeta.', success: true } }];
+      const content = JSON.stringify({ evaluation_previous_goal: 'Página cargada', memory: '', next_goal: 'Pulsar Continuar', action });
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({
+        id: `chatcmpl-e2e-${calls.length}`,
+        object: 'chat.completion',
+        created: 0,
+        model: payload.model,
+        choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+      }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return {
+    url: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
+    calls,
+    close: () => new Promise<void>((resolve) => server.close(() => resolve()))
+  };
+}
+
+test('an agent completes a task in its own card through the frozen sidecar, the scoped gateway and a local model', async () => {
+  test.skip(!existsSync(agentHostPath) && process.env.OMNIBROWSER_REQUIRE_AGENT_E2E !== '1', 'Run npm run agent:build to include the Browser Use sidecar.');
+  test.setTimeout(150_000);
+  const model = await startFakeModel();
+  const modelCalls = model.calls;
+  const modelUrl = model.url;
+  const workspace = seededWorkspace([
+    { x: 20, y: 20, width: 720, height: 460, url: `${origin}/agent-task` },
+    { x: 780, y: 20, width: 360, height: 300, url: `${origin}/one` }
+  ], { selectedIndex: 1 });
+  const launched = await launchApp(newUserData(workspace), {
+    env: { OMNIBROWSER_AGENT_HOST_PATH: agentHostPath },
+    // safeStorage uses an in-memory key instead of the login keychain of the machine running the suite.
+    args: ['--use-mock-keychain']
+  });
+  try {
+    const initial = await snapshot(launched.shell);
+    const browserId = initial.browsers.find((browser) => browser.url.endsWith('/agent-task'))!.id;
+    const selectedByUser = initial.selectedBrowserId;
+    expect(selectedByUser).not.toBe(browserId);
+    await launched.shell.evaluate((baseUrl) => window.omniBrowser.agents.saveProvider({ baseUrl, model: 'e2e-model', apiKey: 'e2e-secret-key' }), modelUrl);
+    const card = launched.shell.locator(`[data-browser-id="${browserId}"]`);
+    await card.getByRole('button', { name: /^Abrir agente/ }).click();
+    const panel = card.locator('.agent-chat-panel');
+    const composer = panel.getByLabel('Instrucción para el agente');
+    await composer.fill('Pulsa el botón Continuar');
+    await composer.press('Enter');
+
+    await expect(panel.getByText('Botón pulsado en la tarjeta.')).toBeVisible({ timeout: 120_000 });
+    await expect(panel.locator('.agent-state-badge')).toHaveText('Completado');
+    await expect(panel.getByText(/^Paso \d+: clic$/)).toBeVisible();
+    expect(await launched.app.evaluate(({ webContents }) => webContents.getAllWebContents().map((contents) => contents.getTitle()))).toContain('Clicked');
+    expect(modelCalls.length).toBeGreaterThanOrEqual(2);
+    expect(modelCalls.every((header) => header === 'Bearer e2e-secret-key')).toBe(true);
+
+    // Neither the conversation nor the provider file keeps the key, and the conversation keeps no CDP capability.
+    const record = readFileSync(path.join(launched.userData, 'agents', `${browserId}.json`), 'utf8');
+    expect(record).toContain('Pulsa el botón Continuar');
+    expect(record).not.toContain('e2e-secret-key');
+    expect(record).not.toMatch(/127\.0\.0\.1:\d+\/cdp\//);
+    expect(readFileSync(path.join(launched.userData, 'agent-provider.json'), 'utf8')).not.toContain('e2e-secret-key');
+    // The agent's clicks never select or raise its card on behalf of the user.
+    expect((await snapshot(launched.shell)).selectedBrowserId).toBe(selectedByUser);
+    expect(launched.output.join('')).not.toMatch(/Error inesperado/);
+  } finally {
+    await closeApp(launched);
+    await model.close();
+  }
+});
+
+test('a key kept only for this session reaches the agent but never the disk, and a restart asks only for the key', async () => {
+  test.skip(!existsSync(agentHostPath) && process.env.OMNIBROWSER_REQUIRE_AGENT_E2E !== '1', 'Run npm run agent:build to include the Browser Use sidecar.');
+  test.setTimeout(180_000);
+  const model = await startFakeModel();
+  const userData = newUserData(seededWorkspace([{ x: 20, y: 20, width: 720, height: 460, url: `${origin}/agent-task` }]));
+  const options = { env: { OMNIBROWSER_AGENT_HOST_PATH: agentHostPath }, args: ['--use-mock-keychain'] };
+  let launched = await launchApp(userData, options);
+  try {
+    const browserId = (await snapshot(launched.shell)).browsers[0]!.id;
+    // "Recordar la clave en este Mac" unchecked: nothing is encrypted or written for the key.
+    const saved = await launched.shell.evaluate((baseUrl) => window.omniBrowser.agents.saveProvider({ baseUrl, model: 'e2e-model', apiKey: 'e2e-session-key', rememberKey: false }), model.url);
+    expect(saved).toEqual({ configured: true, baseUrl: model.url, model: 'e2e-model', hasApiKey: true, keyStorage: 'session' });
+    const providerFile = readFileSync(path.join(userData, 'agent-provider.json'), 'utf8');
+    expect(providerFile).toContain('e2e-model');
+    expect(providerFile).not.toContain('encryptedApiKey');
+
+    const card = launched.shell.locator(`[data-browser-id="${browserId}"]`);
+    await card.getByRole('button', { name: /^Abrir agente/ }).click();
+    const panel = card.locator('.agent-chat-panel');
+    await panel.getByRole('button', { name: 'Configurar proveedor del agente' }).click();
+    const dialog = launched.shell.getByRole('dialog', { name: 'Proveedor del agente' });
+    await expect(dialog.getByText(/Hay una clave activa solo en esta sesión/)).toBeVisible();
+    await expect(dialog.getByRole('checkbox', { name: 'Recordar la clave en este Mac' })).not.toBeChecked();
+    await dialog.getByRole('button', { name: 'Cerrar configuración del proveedor' }).click();
+
+    const composer = panel.getByLabel('Instrucción para el agente');
+    await composer.fill('Pulsa el botón Continuar');
+    await composer.press('Enter');
+    await expect(panel.getByText('Botón pulsado en la tarjeta.')).toBeVisible({ timeout: 120_000 });
+    expect(model.calls.length).toBeGreaterThanOrEqual(2);
+    expect(model.calls.every((header) => header === 'Bearer e2e-session-key')).toBe(true);
+    await closeApp(launched);
+    expect(filesContaining(userData, ['e2e-session-key'])).toEqual([]);
+
+    // After a restart the endpoint and the model are still filled in; only the key is asked again.
+    launched = await launchApp(userData, options);
+    expect(await launched.shell.evaluate(() => window.omniBrowser.agents.getProvider()))
+      .toEqual({ configured: false, baseUrl: model.url, model: 'e2e-model', hasApiKey: false, keyStorage: null });
+    const reopened = launched.shell.locator(`[data-browser-id="${browserId}"]`);
+    await reopened.getByRole('button', { name: /^Abrir agente/ }).click();
+    await reopened.locator('.agent-chat-panel').getByRole('button', { name: 'Configurar proveedor del agente' }).click();
+    const again = launched.shell.getByRole('dialog', { name: 'Proveedor del agente' });
+    await expect(again.getByLabel('URL base')).toHaveValue(model.url);
+    await expect(again.getByLabel('Modelo')).toHaveValue('e2e-model');
+    await expect(again.getByLabel('Clave API')).toHaveAttribute('placeholder', 'Introduce una clave API');
+  } finally {
+    await closeApp(launched);
+    await model.close();
+  }
 });
 
 test('Chromium surfaces never cover a higher card, the minimap or a visible notice', async () => {

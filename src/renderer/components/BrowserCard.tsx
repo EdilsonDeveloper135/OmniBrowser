@@ -1,6 +1,7 @@
 import {
   ArrowLeft,
   ArrowRight,
+  Bot,
   CircleAlert,
   Copy,
   Expand,
@@ -18,10 +19,12 @@ import {
   X
 } from 'lucide-react';
 import { memo, useEffect, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import type { AgentChatSnapshot, AgentSummary } from '../../shared/schemas';
 import { sameRect } from '../../shared/geometry';
 import type { BrowserSnapshot, ProfileRecord, StackRecord, WorldRect } from '../../shared/schemas';
 import { displayDomain } from '../../shared/urls';
 import { profileColor } from '../lib/profile-colors';
+import { AgentChatPanel, agentStateLabel } from './AgentChatPanel';
 import { Favicon } from './Favicon';
 
 export type ResizeDirection = 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'nw';
@@ -52,6 +55,12 @@ export interface BrowserCardActions {
   menuOpenChange: (browser: BrowserSnapshot, open: boolean) => void;
   selectStackMember: (stack: StackRecord, browserId: string) => void;
   unstack: (stack: StackRecord) => void;
+  toggleAgentPanel: (browser: BrowserSnapshot) => void;
+  sendAgentInstruction: (browser: BrowserSnapshot, instruction: string) => void;
+  pauseAgent: (browser: BrowserSnapshot) => void;
+  resumeAgent: (browser: BrowserSnapshot) => void;
+  stopAgent: (browser: BrowserSnapshot) => void;
+  openAgentSettings: () => void;
 }
 
 interface BrowserCardProps {
@@ -63,6 +72,12 @@ interface BrowserCardProps {
   multiSelected: boolean;
   stack?: StackRecord;
   stackBrowsers: BrowserSnapshot[];
+  agentSummary?: AgentSummary | null;
+  agentSnapshot?: AgentChatSnapshot | null;
+  agentPanelOpen?: boolean;
+  agentLoading?: boolean;
+  agentError?: string | null;
+  agentProviderReady?: boolean;
   actions: BrowserCardActions;
 }
 
@@ -78,11 +93,33 @@ export const BrowserCard = memo(BrowserCardView, (previous, next) => previous.br
   && previous.selected === next.selected
   && previous.multiSelected === next.multiSelected
   && previous.stack === next.stack
+  && previous.agentSummary === next.agentSummary
+  && previous.agentSnapshot === next.agentSnapshot
+  && previous.agentPanelOpen === next.agentPanelOpen
+  && previous.agentLoading === next.agentLoading
+  && previous.agentError === next.agentError
+  && previous.agentProviderReady === next.agentProviderReady
   && previous.actions === next.actions
   && sameRect(previous.rect, next.rect)
   && sameBrowsers(previous.stackBrowsers, next.stackBrowsers));
 
-function BrowserCardView({ browser, profiles, rect, surface, selected, multiSelected, stack, stackBrowsers, actions }: BrowserCardProps) {
+function BrowserCardView({
+  browser,
+  profiles,
+  rect,
+  surface,
+  selected,
+  multiSelected,
+  stack,
+  stackBrowsers,
+  agentSummary = null,
+  agentSnapshot = null,
+  agentPanelOpen = false,
+  agentLoading = false,
+  agentError = null,
+  agentProviderReady = false,
+  actions
+}: BrowserCardProps) {
   const profileIndex = profiles.findIndex((profile) => profile.id === browser.profileId);
   const profile = profiles[profileIndex];
   const [address, setAddress] = useState(browser.url);
@@ -121,6 +158,15 @@ function BrowserCardView({ browser, profiles, rect, surface, selected, multiSele
           <Favicon browser={browser} />
           <span className="inactive-domain">{displayDomain(browser.url)}</span>
           {browser.positionLocked ? <Lock aria-label="Posición bloqueada" size={12} /> : null}
+          <button
+            aria-label={`Abrir agente (${agentStateLabel(agentSummary?.state ?? 'idle')})`}
+            className={`card-agent-button is-${agentSummary?.state ?? 'idle'}`}
+            onClick={(event) => { event.stopPropagation(); actions.toggleAgentPanel(browser); }}
+            type="button"
+          >
+            <Bot size={14} />
+            <span aria-hidden="true" className="card-agent-state-dot" />
+          </button>
           <button aria-label="Restaurar navegador" onClick={(event) => { event.stopPropagation(); actions.toggleMinimized(browser); }} type="button"><Shrink size={14} /></button>
         </header>
       </article>
@@ -165,6 +211,18 @@ function BrowserCardView({ browser, profiles, rect, surface, selected, multiSele
               </div>
             ) : null}
             {browser.runtime.isAudible ? <Volume2 className="runtime-audio" aria-label="Reproduciendo audio" size={14} /> : null}
+            <button
+              aria-expanded={agentPanelOpen}
+              aria-label={`${agentPanelOpen ? 'Cerrar' : 'Abrir'} agente (${agentStateLabel(agentSummary?.state ?? 'idle')})`}
+              className={`card-agent-button is-${agentSummary?.state ?? 'idle'} ${agentPanelOpen ? 'is-open' : ''}`}
+              onClick={() => actions.toggleAgentPanel(browser)}
+              onPointerDown={(event) => event.stopPropagation()}
+              title={`${agentStateLabel(agentSummary?.state ?? 'idle')}${agentSummary?.queuedTaskCount ? ` · ${agentSummary.queuedTaskCount} en cola` : ''}`}
+              type="button"
+            >
+              <Bot size={14} />
+              <span aria-hidden="true" className="card-agent-state-dot" />
+            </button>
             <details className="card-menu native-occluder" onPointerDown={(event) => event.stopPropagation()} onToggle={(event) => actions.menuOpenChange(browser, event.currentTarget.open)}>
               <summary aria-label="Acciones del navegador"><Menu size={15} /></summary>
               <div className="card-menu-popover native-occluder" onClick={(event) => {
@@ -191,17 +249,48 @@ function BrowserCardView({ browser, profiles, rect, surface, selected, multiSele
             </details>
           </>
         ) : (
-          <span className="inactive-domain">{displayDomain(browser.url)}</span>
+          <>
+            <span className="inactive-domain">{displayDomain(browser.url)}</span>
+            <button
+              aria-expanded={agentPanelOpen}
+              aria-label={`${agentPanelOpen ? 'Cerrar' : 'Abrir'} agente (${agentStateLabel(agentSummary?.state ?? 'idle')})`}
+              className={`card-agent-button is-${agentSummary?.state ?? 'idle'} ${agentPanelOpen ? 'is-open' : ''}`}
+              onClick={() => actions.toggleAgentPanel(browser)}
+              onPointerDown={(event) => event.stopPropagation()}
+              type="button"
+            >
+              <Bot size={14} />
+              <span aria-hidden="true" className="card-agent-state-dot" />
+            </button>
+          </>
         )}
       </header>
-      <div className="browser-content-slot" data-browser-content={browser.id}>
-        <div className="browser-placeholder">
-          {browser.suspended ? <Moon size={30} /> : browser.runtime.crashed ? <CircleAlert size={30} /> : <span className="placeholder-globe" />}
-          <strong>{browser.suspended ? 'Navegador en reposo' : browser.runtime.crashed ? 'La vista dejó de responder' : browser.title || 'Nueva página'}</strong>
-          <span>{displayDomain(browser.url)}</span>
-          {browser.suspended ? <button onClick={() => actions.wake(browser)} type="button">Activar navegador</button> : null}
-          {!browser.suspended && browser.runtime.crashed ? <button onClick={() => actions.reload(browser)} type="button">Recargar</button> : null}
+      <div className={`browser-card-body ${agentPanelOpen ? 'has-agent-panel' : ''}`}>
+        <div className="browser-content-slot" data-browser-content={browser.id} data-browser-native-pane={browser.id}>
+          <div className="browser-placeholder">
+            {browser.suspended ? <Moon size={30} /> : browser.runtime.crashed ? <CircleAlert size={30} /> : <span className="placeholder-globe" />}
+            <strong>{browser.suspended ? 'Navegador en reposo' : browser.runtime.crashed ? 'La vista dejó de responder' : browser.title || 'Nueva página'}</strong>
+            <span>{displayDomain(browser.url)}</span>
+            {browser.suspended ? <button onClick={() => actions.wake(browser)} type="button">Activar navegador</button> : null}
+            {!browser.suspended && browser.runtime.crashed ? <button onClick={() => actions.reload(browser)} type="button">Recargar</button> : null}
+          </div>
         </div>
+        {agentPanelOpen ? (
+          <AgentChatPanel
+            browserId={browser.id}
+            error={agentError}
+            loading={agentLoading}
+            onClose={() => actions.toggleAgentPanel(browser)}
+            onOpenSettings={actions.openAgentSettings}
+            onPause={() => actions.pauseAgent(browser)}
+            onResume={() => actions.resumeAgent(browser)}
+            onSend={(instruction) => actions.sendAgentInstruction(browser, instruction)}
+            onStop={() => actions.stopAgent(browser)}
+            providerReady={agentProviderReady}
+            snapshot={agentSnapshot}
+            summary={agentSummary}
+          />
+        ) : null}
       </div>
       {resizable ? (['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw'] as ResizeDirection[]).map((direction) => (
         <span

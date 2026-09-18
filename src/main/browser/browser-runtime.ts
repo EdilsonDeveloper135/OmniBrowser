@@ -15,6 +15,7 @@ import { BrowserNotFoundError, WorkspaceModel, type NavigationChange } from '../
 import type { SaveUrgency } from '../lifecycle/save-scheduler';
 import { ProfileSessionManager } from '../profiles/profile-session-manager';
 import { registerDownloadWebContents, remoteWebPreferences } from '../security/security-policy';
+import { isSyntheticInputInFlight } from './automation-input';
 import { captureFavicon, clearFaviconCache } from './favicon-cache';
 
 const NET_ERROR_ABORTED = -3;
@@ -25,6 +26,8 @@ interface RuntimeEntry {
   readonly view: WebContentsView;
   readonly contents: WebContents;
   readonly contentsId: number;
+  readonly targetId: string;
+  readonly runtimeEpoch: number;
   readonly state: BrowserRuntimeState;
   // Incremented by every navigation OmniBrowser starts; a restore fallback only runs if no newer navigation superseded it.
   navigationToken: number;
@@ -33,7 +36,19 @@ interface RuntimeEntry {
   surfaceLayer: 'normal' | 'pinned' | 'immersive';
   unregisterDownload: () => void;
   disposed: boolean;
+  automationRevoked: boolean;
 }
+
+export interface AutomationTarget {
+  readonly browserId: string;
+  readonly profileId: string;
+  readonly contents: WebContents;
+  readonly contentsId: number;
+  readonly targetId: string;
+  readonly runtimeEpoch: number;
+}
+
+export type AutomationTargetRevocationReason = 'closed' | 'suspended' | 'profile-changed' | 'destroyed' | 'crashed' | 'shutdown';
 
 interface BrowserRuntimeOptions {
   window: BrowserWindow;
@@ -47,6 +62,9 @@ interface BrowserRuntimeOptions {
   onNativeBrowserClick?: (browserId: string, shiftKey: boolean) => void;
   onNativeBrowserEscape?: (browserId: string) => void;
   onContentsDestroyed?: (contentsId: number) => void;
+  onAutomationTargetReady?: (target: AutomationTarget) => void;
+  onAutomationTargetRevoked?: (target: AutomationTarget, reason: AutomationTargetRevocationReason) => void;
+  onBrowserRemoved?: (browserId: string) => void;
 }
 
 export class BrowserRuntime {
@@ -61,7 +79,11 @@ export class BrowserRuntime {
   readonly #onNativeBrowserClick: (browserId: string, shiftKey: boolean) => void;
   readonly #onNativeBrowserEscape: (browserId: string) => void;
   readonly #onContentsDestroyed: (contentsId: number) => void;
+  readonly #onAutomationTargetReady: (target: AutomationTarget) => void;
+  readonly #onAutomationTargetRevoked: (target: AutomationTarget, reason: AutomationTargetRevocationReason) => void;
+  readonly #onBrowserRemoved: (browserId: string) => void;
   readonly #entries = new Map<string, RuntimeEntry>();
+  readonly #runtimeEpochs = new Map<string, number>();
   readonly #intentionalCloses = new Set<number>();
   readonly #syncTimers = new Map<string, NodeJS.Timeout>();
   readonly #lastSyncAt = new Map<string, number>();
@@ -83,6 +105,9 @@ export class BrowserRuntime {
     this.#onNativeBrowserClick = options.onNativeBrowserClick ?? (() => undefined);
     this.#onNativeBrowserEscape = options.onNativeBrowserEscape ?? (() => undefined);
     this.#onContentsDestroyed = options.onContentsDestroyed ?? (() => undefined);
+    this.#onAutomationTargetReady = options.onAutomationTargetReady ?? (() => undefined);
+    this.#onAutomationTargetRevoked = options.onAutomationTargetRevoked ?? (() => undefined);
+    this.#onBrowserRemoved = options.onBrowserRemoved ?? (() => undefined);
     this.#window.webContents.on('before-input-event', (_event, input) => this.#trackModifiers(input));
     this.#window.on('blur', () => { this.#shiftHeld = false; });
   }
@@ -105,6 +130,20 @@ export class BrowserRuntime {
     return entry ? structuredClone(entry.state) : undefined;
   }
 
+  /** Returns a capability-bound target for one logical browser, waking only that browser when needed. */
+  acquireAutomationTarget(browserId: string): AutomationTarget {
+    this.#assertActive();
+    const { entry, woke } = this.#ensureAwakeView(browserId);
+    this.#afterWake(woke);
+    return this.#toAutomationTarget(browserId, entry);
+  }
+
+  getAutomationTarget(browserId: string): AutomationTarget | undefined {
+    const entry = this.#entries.get(browserId);
+    if (!entry || entry.disposed || entry.contents.isDestroyed()) return undefined;
+    return this.#toAutomationTarget(browserId, entry);
+  }
+
   createBrowser(profileId: string): void {
     this.#assertActive();
     const browser = this.#model.createBrowser(profileId);
@@ -117,8 +156,9 @@ export class BrowserRuntime {
   closeBrowser(browserId: string): void {
     this.#assertActive();
     this.#requireBrowser(browserId);
-    this.#destroyView(browserId);
+    this.#destroyView(browserId, 'closed');
     this.#model.removeBrowser(browserId);
+    this.#onBrowserRemoved(browserId);
     this.#scheduleSave();
     this.#onModelChanged();
   }
@@ -140,7 +180,7 @@ export class BrowserRuntime {
     if (current.profileId === profileId) return;
     this.#model.getProfile(profileId);
     this.#captureNavigation(browserId);
-    this.#destroyView(browserId);
+    this.#destroyView(browserId, 'profile-changed');
     this.#model.assignProfile(browserId, profileId);
     if (!this.#model.isSuspended(browserId)) this.#ensureView(browserId);
     this.#applyNativeOrder();
@@ -214,7 +254,7 @@ export class BrowserRuntime {
     this.#requireBrowser(browserId);
     if (this.#model.isSuspended(browserId)) return;
     this.#captureNavigation(browserId);
-    this.#destroyView(browserId);
+    this.#destroyView(browserId, 'suspended');
     this.#model.setSuspended(browserId, true);
     this.#scheduleSave();
     this.#onModelChanged();
@@ -276,7 +316,7 @@ export class BrowserRuntime {
     for (const timer of this.#syncTimers.values()) clearTimeout(timer);
     this.#syncTimers.clear();
     this.#pendingCaptures.clear();
-    for (const browserId of [...this.#entries.keys()]) this.#destroyView(browserId);
+    for (const browserId of [...this.#entries.keys()]) this.#destroyView(browserId, 'shutdown');
     clearFaviconCache();
   }
 
@@ -315,10 +355,15 @@ export class BrowserRuntime {
   }
 
   #register(browserId: string, profileId: string, view: WebContentsView, contents: WebContents, profileSession: Session): RuntimeEntry {
+    const runtimeEpoch = (this.#runtimeEpochs.get(browserId) ?? 0) + 1;
+    this.#runtimeEpochs.set(browserId, runtimeEpoch);
+    const targetId = contents.getOrCreateDevToolsTargetId?.() ?? `webcontents-${contents.id}`;
     const entry: RuntimeEntry = {
       view,
       contents,
       contentsId: contents.id,
+      targetId,
+      runtimeEpoch,
       state: {
         isAwake: true,
         isLoading: contents.isLoading(),
@@ -335,7 +380,8 @@ export class BrowserRuntime {
       appliedVisible: false,
       surfaceLayer: 'normal',
       unregisterDownload: () => undefined,
-      disposed: false
+      disposed: false,
+      automationRevoked: false
     };
     this.#entries.set(browserId, entry);
     view.setVisible(false);
@@ -347,6 +393,7 @@ export class BrowserRuntime {
       this.#onBrowserChanged(browserId);
     });
     this.#configureContents(browserId, profileId, entry, profileSession);
+    this.#onAutomationTargetReady(this.#toAutomationTarget(browserId, entry));
     return entry;
   }
 
@@ -404,6 +451,14 @@ export class BrowserRuntime {
 
     contents.on('will-navigate', guardNavigation);
     contents.on('will-redirect', guardNavigation);
+    // will-navigate only reports navigations started by the page. One started by the browser side, such as an agent's
+    // CDP Page.navigate, is stopped here; stopping from inside the observer is deferred, as Chromium requires.
+    contents.on('did-start-navigation', (details) => {
+      if (!details.isMainFrame || details.isSameDocument || isAllowedNavigationUrl(details.url)) return;
+      setImmediate(() => {
+        if (!entry.disposed && !contents.isDestroyed()) contents.stop();
+      });
+    });
     contents.on('will-attach-webview', (event) => event.preventDefault());
     contents.on('did-start-loading', () => {
       entry.state.isLoading = true;
@@ -413,7 +468,11 @@ export class BrowserRuntime {
       entry.state.isLoading = false;
       this.#queueSync(browserId, true);
     });
-    contents.on('did-navigate', () => {
+    contents.on('did-navigate', (_event, url) => {
+      if (!isAllowedNavigationUrl(url)) {
+        this.#leaveDisallowedPage(entry, url, isPrivate);
+        return;
+      }
       entry.state.crashed = false;
       entry.state.lastError = null;
       this.#queueSync(browserId, true);
@@ -462,12 +521,15 @@ export class BrowserRuntime {
     // Pressing inside a page selects its card. Only native input is used: 'focus' also fires for programmatic focus,
     // lazy view creation and window.focus(), which would let a background page steal the selection.
     contents.on('input-event', (_event, input) => {
+      // An agent's synthesized click must not select, raise or multi-select the card the user is not touching.
+      if (isSyntheticInputInFlight(contents)) return;
       if (input.type === 'mouseDown' || input.type === 'touchStart' || input.type === 'gestureTapDown') {
         this.#onNativeBrowserClick(browserId, this.#shiftHeld || ('modifiers' in input && Boolean(input.modifiers?.includes('shift'))));
         this.#selectFromPage(browserId, entry);
       }
     });
     contents.once('destroyed', () => {
+      this.#revokeAutomationTarget(browserId, entry, 'destroyed');
       entry.disposed = true;
       this.#onContentsDestroyed(entry.contentsId);
       if (this.#entries.get(browserId) === entry) {
@@ -478,6 +540,7 @@ export class BrowserRuntime {
       if (!this.#model.hasBrowser(browserId)) return;
       // A page-initiated window.close() closes its card, as it would close a browser tab.
       this.#model.removeBrowser(browserId);
+      this.#onBrowserRemoved(browserId);
       this.#scheduleSave();
       this.#onModelChanged();
     });
@@ -522,6 +585,17 @@ export class BrowserRuntime {
     this.#scheduleSave();
     setImmediate(() => this.#onModelChanged());
     return providedContents;
+  }
+
+  /** Backstop for a disallowed document that committed anyway: leave it and never capture it into the history. */
+  #leaveDisallowedPage(entry: RuntimeEntry, url: string, isPrivate: boolean): void {
+    this.#onNotice('warning', isPrivate ? 'Navegación bloqueada en un browser Private.' : `Navegación bloqueada: ${url.slice(0, 180)}`);
+    setImmediate(() => {
+      if (entry.disposed || entry.contents.isDestroyed()) return;
+      entry.navigationToken += 1;
+      if (entry.contents.navigationHistory.canGoBack()) entry.contents.navigationHistory.goBack();
+      else void entry.contents.loadURL(DEFAULT_BROWSER_URL);
+    });
   }
 
   #trackModifiers(input: Input): void {
@@ -597,9 +671,10 @@ export class BrowserRuntime {
     for (const view of desired) this.#window.contentView.addChildView(view);
   }
 
-  #destroyView(browserId: string): void {
+  #destroyView(browserId: string, reason: AutomationTargetRevocationReason): void {
     const entry = this.#entries.get(browserId);
     if (!entry) return;
+    this.#revokeAutomationTarget(browserId, entry, reason);
     this.#entries.delete(browserId);
     this.#cancelSync(browserId);
     entry.disposed = true;
@@ -608,6 +683,24 @@ export class BrowserRuntime {
     if (entry.contents.isDestroyed()) return;
     this.#intentionalCloses.add(entry.contentsId);
     entry.contents.close({ waitForBeforeUnload: false });
+  }
+
+  #toAutomationTarget(browserId: string, entry: RuntimeEntry): AutomationTarget {
+    return {
+      browserId,
+      profileId: this.#model.getBrowser(browserId).profileId,
+      contents: entry.contents,
+      contentsId: entry.contentsId,
+      targetId: entry.targetId,
+      runtimeEpoch: entry.runtimeEpoch
+    };
+  }
+
+  #revokeAutomationTarget(browserId: string, entry: RuntimeEntry, reason: AutomationTargetRevocationReason): void {
+    if (entry.automationRevoked) return;
+    entry.automationRevoked = true;
+    if (!this.#model.hasBrowser(browserId)) return;
+    this.#onAutomationTargetRevoked(this.#toAutomationTarget(browserId, entry), reason);
   }
 
   #isSafeContentBounds(bounds: ScreenRect, layer: RuntimeEntry['surfaceLayer'] = 'normal'): boolean {

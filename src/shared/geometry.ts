@@ -1,4 +1,5 @@
 import {
+  AGENT_PANEL_WIDTH,
   CARD_BORDER_WIDTH,
   CARD_CHROME_OVERFLOW,
   CARD_CONTENT_INSET,
@@ -37,6 +38,8 @@ export interface CanvasCard {
   surfaceLayer?: LayoutItem['surfaceLayer'];
   screenContentBounds?: ScreenRect;
   screenChromeBounds?: ScreenRect;
+  /** World units at the right of a world card's body that belong to React, such as the agent chat column. */
+  contentReservedRight?: number;
 }
 
 export interface CanvasLayout {
@@ -92,17 +95,33 @@ export function snapRect(left: number, top: number, right: number, bottom: numbe
   return { x, y, width: Math.max(1, Math.round(right) - x), height: Math.max(1, Math.round(bottom) - y) };
 }
 
-/** Bounds of the Chromium surface of a card: inside the 1px border, below the header and inside the resize gutters. */
-export function projectWorldRect(rect: WorldRect, camera: Camera, viewportOrigin: Point): ScreenRect {
+/**
+ * Bounds of the Chromium surface of a card: inside the 1px border, below the header and inside the resize gutters.
+ * `reservedRight` world units at the right of the body stay with React (the agent chat column).
+ */
+export function projectWorldRect(rect: WorldRect, camera: Camera, viewportOrigin: Point, reservedRight = 0): ScreenRect {
   const zoom = clampZoom(camera.zoom);
   const originX = viewportOrigin.x + camera.panX;
   const originY = viewportOrigin.y + camera.panY;
   return snapRect(
     originX + (rect.x + CARD_BORDER_WIDTH + CARD_CONTENT_INSET.left) * zoom,
     originY + (rect.y + CARD_BORDER_WIDTH + CARD_CONTENT_INSET.top) * zoom,
-    originX + (rect.x + rect.width - CARD_BORDER_WIDTH - CARD_CONTENT_INSET.right) * zoom,
+    originX + (rect.x + rect.width - CARD_BORDER_WIDTH - CARD_CONTENT_INSET.right - reservedRight) * zoom,
     originY + (rect.y + rect.height - CARD_BORDER_WIDTH - CARD_CONTENT_INSET.bottom) * zoom
   );
+}
+
+/** Width of a card's body, where the page (and the agent chat) are drawn, for a card of the given outer width. */
+export function cardBodyWidth(cardWidth: number): number {
+  return cardWidth - CARD_BORDER_WIDTH * 2 - CARD_CONTENT_INSET.left - CARD_CONTENT_INSET.right;
+}
+
+/**
+ * Width left to the page when the agent chat shares the card body. Mirrors `.browser-card-body.has-agent-panel`, whose
+ * chat column takes min(AGENT_PANEL_WIDTH, body) and whose page column takes the rest.
+ */
+export function agentSplitPaneWidth(bodyWidth: number): number {
+  return Math.max(0, bodyWidth - AGENT_PANEL_WIDTH);
 }
 
 /** Everything React draws for a card, including resize handles and the selection ring that extend past its border. */
@@ -278,7 +297,7 @@ export function computeCanvasLayout(cards: readonly CanvasCard[], camera: Camera
   const minimap = minimapRect(viewport);
   let minimapCovered = false;
   const items = cards.map((card) => {
-    const bounds = card.screenContentBounds ?? projectWorldRect(card.worldRect, camera, origin);
+    const bounds = card.screenContentBounds ?? projectWorldRect(card.worldRect, camera, origin, card.contentReservedRight ?? 0);
     const directSurface = card.screenContentBounds !== undefined;
     const ownLayer = layerRank(card.surfaceLayer);
     const visible = !card.nativeHidden

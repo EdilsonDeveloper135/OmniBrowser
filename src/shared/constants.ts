@@ -1,16 +1,18 @@
 export const APP_NAME = 'OmniBrowser';
 export const WORKSPACE_SCHEMA_VERSION = 2 as const;
+export const AGENT_STORE_SCHEMA_VERSION = 1 as const;
 export const MIN_ZOOM = 0.25;
 export const MAX_ZOOM = 2;
 export const INTERACTIVE_ZOOM_THRESHOLD = 0.5;
 export const MIN_BROWSER_WIDTH = 320;
 export const MIN_BROWSER_HEIGHT = 240;
+export const MIN_AGENT_SPLIT_WIDTH = 680;
 export const MINIMIZED_BROWSER_WIDTH = 220;
 export const MINIMIZED_BROWSER_HEIGHT = 52;
 export const ZONE_PADDING = 28;
 export const SNAP_THRESHOLD_PX = 8;
 export const CARD_HEADER_HEIGHT = 38;
-// Must match .browser-card (border) and .browser-content-slot (inset) in styles.css; a unit test enforces it.
+// Must match .browser-card (border) and .browser-card-body (inset) in styles.css; a unit test enforces it.
 export const CARD_BORDER_WIDTH = 1;
 export const CARD_CONTENT_INSET = { top: CARD_HEADER_HEIGHT, right: 16, bottom: 16, left: 16 } as const;
 // Resize handles and the selection ring extend this far outside a card, in world units.
@@ -32,6 +34,17 @@ export const MAX_URL_LENGTH = 4096;
 export const MAX_TITLE_LENGTH = 512;
 export const MAX_HISTORY_ENTRIES = 500;
 export const MAX_BROWSER_COUNT_PER_LAYOUT_BATCH = 500;
+export const MAX_AGENT_INSTRUCTION_LENGTH = 20_000;
+export const MAX_AGENT_MESSAGE_LENGTH = 50_000;
+export const MAX_AGENT_TIMELINE_SUMMARY_LENGTH = 4_000;
+// Context handed to a worker: earlier conversation and interrupted progress. The sidecar accepts up to 32 KiB.
+export const MAX_AGENT_PROGRESS_SUMMARY_LENGTH = 16_000;
+export const MAX_AGENT_QUEUED_TASKS = 20;
+export const MAX_ACTIVE_AGENTS = 4;
+// The chat column and the narrowest page pane of a card with its agent panel open. Must match .browser-card-body in
+// styles.css; a unit test enforces it.
+export const AGENT_PANEL_WIDTH = 312;
+export const MIN_AGENT_NATIVE_PANE_WIDTH = 160;
 
 export const IPC_CHANNELS = {
   bootstrap: 'omni:bootstrap',
@@ -69,5 +82,14 @@ export const IPC_CHANNELS = {
   workspaceCommitLayout: 'omni:workspace:commit-layout',
   workspaceSetCamera: 'omni:workspace:set-camera',
   workspaceSaveNow: 'omni:workspace:save-now',
+  agentsList: 'omni:agents:list',
+  agentsGet: 'omni:agents:get',
+  agentsSend: 'omni:agents:send',
+  agentsPause: 'omni:agents:pause',
+  agentsResume: 'omni:agents:resume',
+  agentsStop: 'omni:agents:stop',
+  agentsGetProvider: 'omni:agents:provider:get',
+  agentsSaveProvider: 'omni:agents:provider:save',
+  agentsTestProvider: 'omni:agents:provider:test',
   event: 'omni:event'
 } as const;

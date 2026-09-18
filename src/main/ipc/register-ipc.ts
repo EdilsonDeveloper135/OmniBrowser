@@ -56,4 +56,13 @@ export function registerIpc(controller: OmniBrowserController): void {
   handle(IPC_CHANNELS.workspaceCommitLayout, (input) => controller.commitLayout(input));
   handle(IPC_CHANNELS.workspaceSetCamera, (input) => controller.setCamera(input));
   handle(IPC_CHANNELS.workspaceSaveNow, () => controller.saveNow());
+  handle(IPC_CHANNELS.agentsList, () => controller.listAgents());
+  handle(IPC_CHANNELS.agentsGet, (input) => controller.getAgent(input));
+  handle(IPC_CHANNELS.agentsSend, (input) => controller.sendAgentInstruction(input));
+  handle(IPC_CHANNELS.agentsPause, (input) => controller.pauseAgent(input));
+  handle(IPC_CHANNELS.agentsResume, (input) => controller.resumeAgent(input));
+  handle(IPC_CHANNELS.agentsStop, (input) => controller.stopAgent(input));
+  handle(IPC_CHANNELS.agentsGetProvider, () => controller.getAgentProvider());
+  handle(IPC_CHANNELS.agentsSaveProvider, (input) => controller.saveAgentProvider(input));
+  handle(IPC_CHANNELS.agentsTestProvider, (input) => controller.testAgentProvider(input));
 }

@@ -5,10 +5,14 @@ const { runElectron } = require('./lib/run-electron.cjs');
 const { createWorkingDirectory } = require('./lib/working-directory.cjs');
 
 const name = process.argv[2];
-if (!['canvas', 'gestures', 'popup', 'resources'].includes(name)) {
-  console.error('Usage: node pocs/run-electron-poc.cjs <canvas|gestures|popup|resources>');
+if (!['agent', 'canvas', 'gestures', 'popup', 'resources'].includes(name)) {
+  console.error('Usage: node pocs/run-electron-poc.cjs <agent|canvas|gestures|popup|resources>');
   process.exit(2);
 }
+// The agent trace needs a Python with agent-runtime/requirements.lock installed, such as the virtual environment
+// agent:build creates (agent-runtime/.venv-<arch>/bin/python). A path is resolved against the working directory.
+const configuredPython = process.env.OMNIBROWSER_AGENT_PYTHON || 'python3';
+const agentPython = configuredPython.includes(path.sep) ? path.resolve(configuredPython) : configuredPython;
 
 (async () => {
   const root = path.resolve(__dirname, '..');
@@ -18,12 +22,14 @@ if (!['canvas', 'gestures', 'popup', 'resources'].includes(name)) {
   const output = path.join(workingDirectory, 'result.json');
   const screenshot = path.join(workingDirectory, 'canvas.png');
   const userData = path.join(workingDirectory, 'user-data');
-  const server = name === 'canvas' || name === 'gestures' ? null : await startFixtureServer();
+  const server = name === 'popup' || name === 'resources' ? await startFixtureServer() : null;
   try {
     const args = [`--output=${output}`, `--user-data=${userData}`];
     if (server) args.push(`--origin=${server.origin}`);
     if (name === 'canvas') args.push(`--screenshot=${screenshot}`);
-    await runElectron(path.join(__dirname, `${name}-main.cjs`), args, { cwd: root });
+    if (name === 'agent') args.push(`--python=${agentPython}`);
+    const entry = name === 'agent' ? 'agent-gateway-main.cjs' : `${name}-main.cjs`;
+    await runElectron(path.join(__dirname, entry), args, { cwd: root });
     const report = JSON.parse(fs.readFileSync(output, 'utf8'));
     if (report.passed !== true) throw new Error(`${name} POC did not pass: ${JSON.stringify(report, null, 2)}`);
     if (name === 'canvas') {

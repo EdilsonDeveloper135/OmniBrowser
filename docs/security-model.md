@@ -6,7 +6,9 @@
 - IndexedDB, DOM storage, Cache Storage, service workers y caché HTTP;
 - URLs/títulos del workspace y geometría de la ventana;
 - capacidad de abrir aplicaciones/protocolos externos;
-- filesystem y APIs Node del proceso principal.
+- filesystem y APIs Node del proceso principal;
+- la clave del proveedor de IA de los agentes y sus conversaciones;
+- el control de cada tarjeta por su agente (una capacidad CDP efímera por ejecución).
 
 ## Límites de confianza
 
@@ -15,6 +17,8 @@
 3. **Preload → IPC main.** Solo métodos nominados, argumentos Zod y sender exacto.
 4. **Main → sistema operativo.** Archivos locales, Keychain/cookies cifradas, diálogo y `shell.openExternal`.
 5. **Perfil → perfil.** La partición Chromium es el límite de aislamiento de sesión.
+6. **Agente → tarjeta.** El sidecar Browser Use y el modelo remoto son tan poco confiables como el contenido de la
+   página: solo reciben una capacidad CDP de loopback limitada a una tarjeta, filtrada por `ScopedCdpGateway`.
 
 ## Controles
 
@@ -37,6 +41,10 @@
 | secretos en historial | solo URL/título; nunca `pageState`; límite de 500 entradas |
 | favicon remoto hostil | sólo URL HTTP(S) emitida por el WebContents; fetch con su Session, cinco redirecciones máximas, allowlist raster/ICO (SVG rechazado) y 256 KiB; clave opaca local, caché en memoria y CSP sin hosts remotos |
 | fuga Private al workspace | proyección persistente filtra perfil, browsers, URLs, títulos, historial, zonas, stacks, orden y pins Private; tests inspeccionan el JSON resultante y una E2E busca en todo `userData` (UTF-8 y UTF-16LE), tras salir y tras reiniciar, el token de cookie, `localStorage`, `sessionStorage`, IndexedDB, título y URL de una página Private y el nombre de sus descargas |
+| agente que salta a otra tarjeta, al shell o a más pestañas | una pasarela por ejecución con URL de capacidad aleatoria en `127.0.0.1`, un único target virtual, `Target.*` virtualizado, targets ajenos, `Target.createTarget/closeTarget` y dominios no auditados denegados; eventos del worker validados contra browser, agente, tarea, ejecución, epoch y secuencia (`npm run agent:compat` con dos tarjetas) |
+| agente que lee credenciales o archivos locales | se deniegan cookies (`Network.*Cookie*`, `Storage.*`), `Network.loadNetworkResource`, `DOM.setFileInputFiles`, descargas e impresión; `Page.navigate` solo acepta `https:`, `http:` y `about:blank`, y el runtime detiene o abandona una navegación iniciada por el navegador hacia otro esquema |
+| agente que altera la tarjeta o el workspace | se deniegan `Page.close`, `Page.crash` y el borrado del historial; `Page.bringToFront` no hace nada; la entrada sintética no selecciona ni eleva tarjetas; el sidecar no emula viewport ni pinta sobre una página en blanco |
+| fuga de la clave del proveedor o de la capacidad CDP | la clave se cifra con `safeStorage` o, si la persona no quiere recordarla o macOS deniega el llavero, queda solo en memoria de main hasta cerrar la app (nunca en claro en disco); nunca vuelve al renderer y solo se envía al origen para el que se guardó; el llavero no se lee al arrancar, solo cuando una tarea o una prueba necesita la clave; clave y URL CDP viajan por stdin, no por argumentos; el sidecar arranca con entorno mínimo y temporal propio `0700`; su stderr solo se registra como huella SHA-256; los registros redactan claves, tokens y URLs de capacidad, y los Private no tocan disco |
 | comportamiento de gestos no publicado | el contrato IPC solo acepta `historySwipeEnabled: false` y el modelo normaliza a `false` el valor cargado de disco; ni un shell comprometido ni un `workspace.json` editado activan navegación por gesto |
 
 La CSP del shell bloquea scripts inline, `eval` y recursos de red. En el paquete, `omnibrowser://` la envía además como cabecera con `connect-src 'self'` (sin WebSocket), `frame-ancestors 'none'` y `X-Content-Type-Options: nosniff`; la cabecera se intersecta con la `<meta>`. En desarrollo, la CSP que Forge inyecta por defecto (con `'unsafe-eval'` e inline) se sustituye por la misma política más `ws://localhost:*` para la recarga en vivo. `style-src-attr 'unsafe-inline'` se mantiene únicamente porque el canvas necesita valores geométricos dinámicos en atributos `style`; no habilita JavaScript inline. El servidor de desarrollo de `npm start` escucha solo en `localhost`; el logger de compilación de Forge (puerto 9000) no permite fijar el host y está documentado en [security-audit.md](security-audit.md).
@@ -47,7 +55,7 @@ El resolvedor de `omnibrowser://app` solo acepta el host `app`, rechaza escapes 
 
 ## Datos en disco
 
-Los perfiles persistentes son deliberadamente durables. En macOS, el fuse `EnableCookieEncryption` permite que Electron use Keychain para cookies cuando el build tiene identidad de firma consistente. El workspace JSON no está cifrado: URLs y títulos son visibles para cualquier proceso con acceso al usuario local.
+Los perfiles persistentes son deliberadamente durables. En macOS, el fuse `EnableCookieEncryption` permite que Electron use Keychain para cookies cuando el build tiene identidad de firma consistente. Cada build local con firma ad hoc es una identidad nueva para el llavero: la primera vez que usa la entrada «OmniBrowser Safe Storage», macOS pide la contraseña de inicio de sesión del Mac («Permitir siempre» la recuerda para ese build). Una denegación dura hasta reiniciar la app; la clave del proveedor sigue usándose en memoria durante la sesión. El workspace JSON no está cifrado: URLs y títulos son visibles para cualquier proceso con acceso al usuario local.
 
 Un perfil Private evita que OmniBrowser serialice su identidad, browsers, URLs, títulos, historial, zonas, stacks, orden y pins, y usa una partición de memoria. Al cruzar hacia un perfil persistente sólo se recrea la URL actual, no cookies, almacenamiento ni historial. Al cerrar la aplicación se cancelan descargas activas y se limpian almacenamiento y caché de las sesiones Private.
 

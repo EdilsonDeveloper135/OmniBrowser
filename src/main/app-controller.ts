@@ -1,5 +1,7 @@
-import { app, BrowserWindow, dialog } from 'electron';
+import { app, BrowserWindow, dialog, safeStorage } from 'electron';
 import {
+  agentInstructionInputSchema,
+  agentProviderInputSchema,
   assignProfileInputSchema,
   browserIdInputSchema,
   browserIdsInputSchema,
@@ -25,9 +27,16 @@ import {
   addStackMemberInputSchema,
   zoneIdInputSchema,
   type ProfileRecord,
+  type AgentChatSnapshot,
+  type AgentProviderPublic,
+  type AgentProviderTestResult,
+  type AgentSummary,
   type WorkspaceSnapshot
 } from '../shared/schemas';
 import type { OmniEvent } from '../shared/contracts';
+import { AgentManager } from './agents/agent-manager';
+import { AgentStore, type AgentBrowserDescriptor } from './agents/agent-store';
+import { ProviderStore } from './agents/provider-store';
 import { BrowserRuntime } from './browser/browser-runtime';
 import { createInitialWorkspace, WorkspaceModel } from './domain/workspace-model';
 import { parseInput } from './ipc/ipc-result';
@@ -44,6 +53,7 @@ export class OmniBrowserController {
   readonly #model: WorkspaceModel;
   readonly #sessions: ProfileSessionManager;
   readonly #runtime: BrowserRuntime;
+  readonly #agents: AgentManager;
   readonly #saveScheduler: SaveScheduler;
   readonly #externalOpenGate = new ExternalOpenGate();
   readonly #notices = new ShellNotices((notice) => this.#emit({ type: 'notice', ...notice }));
@@ -79,7 +89,29 @@ export class OmniBrowserController {
       },
       onNativeBrowserClick: (browserId, shiftKey) => this.#emit({ type: 'native-browser-click', browserId, shiftKey }),
       onNativeBrowserEscape: (browserId) => this.#emit({ type: 'native-browser-escape', browserId }),
-      onContentsDestroyed: (contentsId) => this.#externalOpenGate.forget(contentsId)
+      onContentsDestroyed: (contentsId) => this.#externalOpenGate.forget(contentsId),
+      onAutomationTargetReady: (target) => this.#agents.bindTarget(target),
+      onAutomationTargetRevoked: (target, reason) => this.#agents.revokeTarget(target, reason),
+      onBrowserRemoved: (browserId) => { void this.#agents.removeBrowser(browserId); }
+    });
+    const descriptorFor = (browserId: string): AgentBrowserDescriptor | null => {
+      if (!this.#model.hasBrowser(browserId)) return null;
+      const browser = this.#model.getBrowser(browserId);
+      const profile = this.#model.getProfile(browser.profileId);
+      return { browserId, profileId: profile.id, persistenceKind: profile.kind };
+    };
+    this.#agents = new AgentManager({
+      store: new AgentStore(app.getPath('userData')),
+      providerStore: new ProviderStore(app.getPath('userData'), safeStorage),
+      listBrowserDescriptors: () => this.#model.listBrowsers().map((browser) => {
+        const profile = this.#model.getProfile(browser.profileId);
+        return { browserId: browser.id, profileId: profile.id, persistenceKind: profile.kind };
+      }),
+      getBrowserDescriptor: descriptorFor,
+      acquireTarget: (browserId) => this.#runtime.acquireAutomationTarget(browserId),
+      emitState: (summary) => this.#emit({ type: 'agent-state', summary }),
+      emitEvent: (event) => this.#emit({ type: 'agent-event', event }),
+      onNotice: (level, message) => this.#notice(level, message)
     });
   }
 
@@ -88,6 +120,7 @@ export class OmniBrowserController {
     const loaded = await store.load(createInitialWorkspace);
     const model = new WorkspaceModel(loaded.workspace);
     const controller = new OmniBrowserController(window, store, model, loaded.warning);
+    await controller.#agents.initialize();
     controller.#runtime.initialize();
     controller.#attachWindowLifecycle();
     // A recovered or new workspace is written promptly so that damaged files are preserved and a valid primary exists.
@@ -134,8 +167,9 @@ export class OmniBrowserController {
     return this.snapshot();
   }
 
-  closeBrowser(input: unknown): WorkspaceSnapshot {
+  async closeBrowser(input: unknown): Promise<WorkspaceSnapshot> {
     const { browserId } = parseInput(browserIdInputSchema, input);
+    await this.#agents.removeBrowser(browserId);
     this.#runtime.closeBrowser(browserId);
     return this.snapshot();
   }
@@ -180,6 +214,9 @@ export class OmniBrowserController {
     if (browser.profileId === profileId) return this.snapshot();
     const from = this.#model.getProfile(browser.profileId);
     const to = this.#model.getProfile(profileId);
+    const sessionDetail = from.kind === to.kind
+      ? 'El historial y la URL se conservarán, pero se perderá el estado no guardado de la página y la vista usará inmediatamente la sesión del perfil de destino.'
+      : 'Al cruzar el límite Private/Persistent sólo se conservará la URL actual. El historial, las cookies, el almacenamiento, los formularios y el desplazamiento no se transferirán.';
     const confirmation = await dialog.showMessageBox(this.window, {
       type: 'warning',
       buttons: ['Cancelar', 'Cambiar perfil'],
@@ -188,11 +225,20 @@ export class OmniBrowserController {
       noLink: true,
       title: 'Cambiar sesión del navegador',
       message: `Cambiar de “${from.name}” a “${to.name}” recreará esta vista.`,
-      detail: from.kind === to.kind
-        ? 'El historial y la URL se conservarán, pero se perderá el estado no guardado de la página y la vista usará inmediatamente la sesión del perfil de destino.'
-        : 'Al cruzar el límite Private/Persistent sólo se conservará la URL actual. El historial, las cookies, el almacenamiento, los formularios y el desplazamiento no se transferirán.'
+      detail: this.#agents.hasConversation(browserId)
+        ? `${sessionDetail}\n\nEl agente de esta tarjeta se detendrá y su conversación se borrará: un agente nunca pasa de un perfil a otro.`
+        : sessionDetail
     });
-    if (confirmation.response === 1) this.#runtime.assignProfile(browserId, profileId);
+    if (confirmation.response === 1) {
+      await this.#agents.prepareTargetRevocation(browserId, 'profile-changed');
+      this.#runtime.assignProfile(browserId, profileId);
+      const profile = this.#model.getProfile(profileId);
+      await this.#agents.resetForProfile(browserId, {
+        browserId,
+        profileId,
+        persistenceKind: profile.kind
+      });
+    }
     return this.snapshot();
   }
 
@@ -227,8 +273,9 @@ export class OmniBrowserController {
     return this.snapshot();
   }
 
-  sleep(input: unknown): WorkspaceSnapshot {
+  async sleep(input: unknown): Promise<WorkspaceSnapshot> {
     const { browserId } = parseInput(browserIdInputSchema, input);
+    await this.#agents.prepareTargetRevocation(browserId, 'suspended');
     this.#runtime.sleep(browserId);
     return this.snapshot();
   }
@@ -330,6 +377,47 @@ export class OmniBrowserController {
     if (this.#model.setCamera(camera)) this.#saveScheduler.schedule();
   }
 
+  listAgents(): Promise<AgentSummary[]> {
+    return this.#agents.list();
+  }
+
+  getAgent(input: unknown): Promise<AgentChatSnapshot> {
+    const { browserId } = parseInput(browserIdInputSchema, input);
+    return this.#agents.get(browserId);
+  }
+
+  sendAgentInstruction(input: unknown): Promise<AgentChatSnapshot> {
+    const { browserId, instruction } = parseInput(agentInstructionInputSchema, input);
+    return this.#agents.send(browserId, instruction);
+  }
+
+  pauseAgent(input: unknown): Promise<AgentChatSnapshot> {
+    const { browserId } = parseInput(browserIdInputSchema, input);
+    return this.#agents.pause(browserId);
+  }
+
+  resumeAgent(input: unknown): Promise<AgentChatSnapshot> {
+    const { browserId } = parseInput(browserIdInputSchema, input);
+    return this.#agents.resume(browserId);
+  }
+
+  stopAgent(input: unknown): Promise<AgentChatSnapshot> {
+    const { browserId } = parseInput(browserIdInputSchema, input);
+    return this.#agents.stop(browserId);
+  }
+
+  getAgentProvider(): Promise<AgentProviderPublic> {
+    return this.#agents.getProvider();
+  }
+
+  saveAgentProvider(input: unknown): Promise<AgentProviderPublic> {
+    return this.#agents.saveProvider(parseInput(agentProviderInputSchema, input));
+  }
+
+  testAgentProvider(input: unknown): Promise<AgentProviderTestResult> {
+    return this.#agents.testProvider(parseInput(agentProviderInputSchema, input));
+  }
+
   async saveNow(): Promise<void> {
     this.#runtime.captureAllNavigation();
     this.#saveScheduler.schedule();
@@ -348,6 +436,7 @@ export class OmniBrowserController {
 
   async #performShutdown(): Promise<void> {
     const steps: ReadonlyArray<readonly [string, () => void | Promise<void>]> = [
+      ['detener y guardar los agentes', () => this.#agents.shutdown()],
       ['capturar la navegación', () => this.#runtime.captureAllNavigation()],
       ['guardar el workspace', async () => {
         this.#saveScheduler.schedule();

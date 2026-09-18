@@ -2,6 +2,9 @@ import { z } from 'zod';
 import {
   DEFAULT_BROWSER_URL,
   MAX_BROWSER_COUNT_PER_LAYOUT_BATCH,
+  MAX_AGENT_INSTRUCTION_LENGTH,
+  MAX_AGENT_MESSAGE_LENGTH,
+  MAX_AGENT_TIMELINE_SUMMARY_LENGTH,
   MAX_CAMERA_PAN,
   MAX_HISTORY_ENTRIES,
   MAX_SCREEN_COORDINATE,
@@ -245,6 +248,82 @@ export const workspaceSnapshotSchema = z.object({
   updatedAt: isoDateSchema
 }).strict().superRefine(refineWorkspaceRelations);
 
+export const agentRunStateSchema = z.enum(['idle', 'queued', 'running', 'paused', 'completed', 'error']);
+
+export const agentChatMessageSchema = z.object({
+  id: uuidSchema,
+  role: z.enum(['user', 'assistant']),
+  content: z.string().max(MAX_AGENT_MESSAGE_LENGTH),
+  createdAt: isoDateSchema,
+  taskId: uuidSchema.nullable()
+}).strict();
+
+export const agentTaskSchema = z.object({
+  id: uuidSchema,
+  instruction: z.string().trim().min(1).max(MAX_AGENT_INSTRUCTION_LENGTH),
+  state: agentRunStateSchema,
+  createdAt: isoDateSchema,
+  updatedAt: isoDateSchema,
+  startedAt: isoDateSchema.nullable(),
+  completedAt: isoDateSchema.nullable(),
+  outcome: z.enum(['success', 'cancelled', 'interrupted']).nullable()
+}).strict();
+
+export const agentTimelineEventSchema = z.object({
+  id: uuidSchema,
+  browserId: uuidSchema,
+  agentId: uuidSchema,
+  taskId: uuidSchema.nullable(),
+  runId: uuidSchema.nullable(),
+  sequence: z.number().int().min(0),
+  kind: z.enum(['state', 'action', 'result', 'error']),
+  level: z.enum(['info', 'warning', 'error']),
+  summary: z.string().max(MAX_AGENT_TIMELINE_SUMMARY_LENGTH),
+  createdAt: isoDateSchema
+}).strict();
+
+export const agentSummarySchema = z.object({
+  browserId: uuidSchema,
+  agentId: uuidSchema,
+  chatSessionId: uuidSchema,
+  state: agentRunStateSchema,
+  activeTaskId: uuidSchema.nullable(),
+  queuedTaskCount: z.number().int().min(0).max(50),
+  sequence: z.number().int().min(0),
+  updatedAt: isoDateSchema,
+  requiresProvider: z.boolean()
+}).strict();
+
+export const agentChatSnapshotSchema = z.object({
+  summary: agentSummarySchema,
+  messages: z.array(agentChatMessageSchema).max(200),
+  tasks: z.array(agentTaskSchema).max(50),
+  timeline: z.array(agentTimelineEventSchema).max(500),
+  conversationSummary: z.string().max(MAX_AGENT_MESSAGE_LENGTH)
+}).strict();
+
+export const agentProviderPublicSchema = z.object({
+  configured: z.boolean(),
+  baseUrl: z.string().max(2048).nullable(),
+  model: z.string().max(200).nullable(),
+  hasApiKey: z.boolean(),
+  // 'encrypted': in the system keychain; 'session': in main-process memory until OmniBrowser closes.
+  keyStorage: z.enum(['encrypted', 'session']).nullable()
+}).strict();
+
+export const agentProviderInputSchema = z.object({
+  baseUrl: z.string().trim().url().max(2048),
+  model: z.string().trim().min(1).max(200),
+  apiKey: z.string().trim().min(1).max(8192).optional(),
+  // Saving only: false keeps the key for this session without asking the system keychain.
+  rememberKey: z.boolean().optional()
+}).strict();
+
+export const agentProviderTestResultSchema = z.object({
+  ok: z.literal(true),
+  message: z.string().min(1).max(500)
+}).strict();
+
 export const profileIdInputSchema = z.object({ profileId: uuidSchema }).strict();
 export const createProfileInputSchema = z.object({ name: profileNameSchema }).strict();
 export const browserIdInputSchema = z.object({ browserId: uuidSchema }).strict();
@@ -271,6 +350,10 @@ export const setBrowserOrderInputSchema = z.object({ browserOrder: z.array(uuidS
 // History swipe stays behind the trackpad compatibility gate (docs/architecture.md): Electron cannot cancel wheel input
 // before a WebContentsView handles it, so no client may enable the preference until a gesture router ships.
 export const setPreferencesInputSchema = z.object({ snapEnabled: z.boolean().optional(), historySwipeEnabled: z.literal(false).optional() }).strict().refine((value) => value.snapEnabled !== undefined || value.historySwipeEnabled !== undefined, { message: 'No hay preferencias para actualizar.' });
+export const agentInstructionInputSchema = z.object({
+  browserId: uuidSchema,
+  instruction: z.string().trim().min(1).max(MAX_AGENT_INSTRUCTION_LENGTH)
+}).strict();
 
 export const layoutItemSchema = z.object({
   browserId: uuidSchema,
@@ -300,3 +383,12 @@ export type WorkspaceFile = z.infer<typeof workspaceFileSchema>;
 export type WorkspaceSnapshot = z.infer<typeof workspaceSnapshotSchema>;
 export type LayoutItem = z.infer<typeof layoutItemSchema>;
 export type LayoutBatch = z.infer<typeof layoutBatchSchema>;
+export type AgentRunState = z.infer<typeof agentRunStateSchema>;
+export type AgentChatMessage = z.infer<typeof agentChatMessageSchema>;
+export type AgentTask = z.infer<typeof agentTaskSchema>;
+export type AgentTimelineEvent = z.infer<typeof agentTimelineEventSchema>;
+export type AgentSummary = z.infer<typeof agentSummarySchema>;
+export type AgentChatSnapshot = z.infer<typeof agentChatSnapshotSchema>;
+export type AgentProviderPublic = z.infer<typeof agentProviderPublicSchema>;
+export type AgentProviderInput = z.infer<typeof agentProviderInputSchema>;
+export type AgentProviderTestResult = z.infer<typeof agentProviderTestResultSchema>;

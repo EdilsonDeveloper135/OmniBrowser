@@ -1,0 +1,4 @@
+# Runtime compatibility set. requirements.lock is generated from this file.
+browser-use==0.13.10
+cdp-use==1.4.5
+pyinstaller==6.22.3

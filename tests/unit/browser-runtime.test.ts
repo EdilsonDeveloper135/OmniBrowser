@@ -106,6 +106,7 @@ vi.mock('electron', () => {
 });
 
 const { BrowserRuntime } = await import('../../src/main/browser/browser-runtime');
+const { withSyntheticInput } = await import('../../src/main/browser/automation-input');
 const { WorkspaceModel, createInitialWorkspace } = await import('../../src/main/domain/workspace-model');
 import type { SaveUrgency } from '../../src/main/lifecycle/save-scheduler';
 import type { ProfileSessionManager } from '../../src/main/profiles/profile-session-manager';
@@ -409,5 +410,62 @@ describe('BrowserRuntime', () => {
     expect(windowMock.contentView.children.length).toBe(0);
     // Calling applyLayout after dispose should be a no-op
     runtime.applyLayout({ items: [] });
+  });
+
+  it('selects a card for a real click inside its page but never for an agent\'s synthesized click', async () => {
+    const onNativeBrowserClick = vi.fn();
+    const runtime = new BrowserRuntime({
+      window: windowMock as unknown as Electron.BrowserWindow,
+      model,
+      sessions: sessionsMock,
+      scheduleSave: scheduleSaveMock,
+      onModelChanged: onModelChangedMock,
+      onBrowserChanged: onBrowserChangedMock,
+      onNotice: onNoticeMock,
+      onExternalUrl: onExternalUrlMock,
+      onNativeBrowserClick
+    });
+    const profile = model.listProfiles()[0]!;
+    runtime.createBrowser(profile.id);
+    runtime.createBrowser(profile.id);
+    const [first, second] = model.listBrowsers().slice(-2);
+    const firstView = windowMock.contentView.children.find((view) => runtime.getAutomationTarget(first!.id)?.contents === view.webContents as unknown)!;
+    runtime.focus(second!.id);
+
+    await withSyntheticInput(firstView.webContents as unknown as Electron.WebContents, async () => {
+      firstView.webContents.emit('input-event', {}, { type: 'mouseDown' });
+    });
+    expect(onNativeBrowserClick).not.toHaveBeenCalled();
+    expect(model.selectedBrowserId).toBe(second!.id);
+
+    firstView.webContents.emit('input-event', {}, { type: 'mouseDown' });
+    expect(onNativeBrowserClick).toHaveBeenCalledWith(first!.id, false);
+    expect(model.selectedBrowserId).toBe(first!.id);
+    runtime.dispose();
+  });
+
+  it('stops and leaves navigations to disallowed schemes that bypass will-navigate', async () => {
+    const runtime = createRuntime();
+    runtime.initialize();
+    const browserId = model.selectedBrowserId!;
+    const view = windowMock.contentView.children[0]!;
+    const contents = view.webContents;
+
+    contents.emit('did-start-navigation', { url: 'https://example.com/', isMainFrame: true, isSameDocument: false });
+    contents.emit('did-start-navigation', { url: 'file:///etc/hosts', isMainFrame: false, isSameDocument: false });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(contents.stop).not.toHaveBeenCalled();
+    contents.emit('did-start-navigation', { url: 'file:///etc/hosts', isMainFrame: true, isSameDocument: false });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(contents.stop).toHaveBeenCalledTimes(1);
+
+    contents.navigationHistory.canGoBack.mockReturnValue(true);
+    onBrowserChangedMock.mockClear();
+    contents.emit('did-navigate', {}, 'file:///etc/hosts');
+    expect(onNoticeMock).toHaveBeenCalledWith('warning', 'Navegación bloqueada: file:///etc/hosts');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(contents.navigationHistory.goBack).toHaveBeenCalledTimes(1);
+    expect(model.getBrowser(browserId).url).not.toContain('file:');
+    runtime.dispose();
   });
 });

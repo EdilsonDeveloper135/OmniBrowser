@@ -66,7 +66,13 @@ function createMockActions(): BrowserCardActions {
     fullscreen: vi.fn(),
     menuOpenChange: vi.fn(),
     selectStackMember: vi.fn(),
-    unstack: vi.fn()
+    unstack: vi.fn(),
+    toggleAgentPanel: vi.fn(),
+    sendAgentInstruction: vi.fn(),
+    pauseAgent: vi.fn(),
+    resumeAgent: vi.fn(),
+    stopAgent: vi.fn(),
+    openAgentSettings: vi.fn()
   };
 }
 
@@ -181,5 +187,43 @@ describe('BrowserCard component', () => {
     const restoreBtn = screen.getByRole('button', { name: 'Restaurar navegador' });
     fireEvent.click(restoreBtn);
     expect(actions.toggleMinimized).toHaveBeenCalledWith(browser);
+  });
+
+  it('opens an isolated agent panel and marks only the native browser pane', () => {
+    const browser = createMockBrowser();
+    const actions = createMockActions();
+    const { container } = render(
+      <BrowserCard
+        actions={actions}
+        agentPanelOpen={true}
+        agentSummary={{
+          browserId: browser.id,
+          agentId: 'agent-1',
+          chatSessionId: 'chat-1',
+          state: 'running',
+          activeTaskId: 'task-1',
+          queuedTaskCount: 1,
+          sequence: 3,
+          updatedAt: '2026-01-01T00:00:00.000Z',
+          requiresProvider: false
+        }}
+        browser={browser}
+        multiSelected={false}
+        profiles={[mockProfile]}
+        rect={browser.worldRect}
+        selected={true}
+        stackBrowsers={[]}
+        surface="world"
+      />
+    );
+
+    expect(screen.getByLabelText('Agente del navegador browser-1')).not.toBeNull();
+    const nativePane = container.querySelector('[data-browser-native-pane="browser-1"]');
+    expect(nativePane).not.toBeNull();
+    expect(nativePane?.getAttribute('data-browser-content')).toBe('browser-1');
+    expect(container.querySelector('.agent-chat-panel')?.hasAttribute('data-browser-native-pane')).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: /Cerrar agente \(Ejecutando\)/ }));
+    expect(actions.toggleAgentPanel).toHaveBeenCalledWith(browser);
   });
 });

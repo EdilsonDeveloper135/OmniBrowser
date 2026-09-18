@@ -1,0 +1,4 @@
+#!/bin/sh
+# E2E-only resource. Production package/make always builds the PyInstaller host.
+printf '%s\n' '{"protocolVersion":1,"type":"error","sequence":1,"code":"test-runtime","message":"Agent runtime is disabled in the E2E package.","diagnostic":"test stub","fatal":true}'
+exit 1

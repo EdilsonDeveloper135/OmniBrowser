@@ -25,6 +25,16 @@ npm run test:e2e
 npm audit --omit=dev
 ```
 
+Si el cambio toca los agentes (`src/main/agents/`, `agent-runtime/` o su panel), añada:
+
+```bash
+npm run agent:test
+npm run agent:build
+OMNIBROWSER_AGENT_PYTHON=agent-runtime/.venv-arm64/bin/python npm run agent:compat
+```
+
+Con el sidecar construido, `npm run test:e2e` ejecuta también la tarea completa del agente contra un modelo local; sin él, esa prueba se omite. `npm run package` y `npm run make` necesitan el sidecar de la arquitectura que empaquetan.
+
 No use credenciales reales, cookies exportadas ni cuentas personales en fixtures, capturas o logs. Las pruebas deben usar el servidor local incluido.
 
 ## Convenciones de implementación
@@ -48,10 +58,11 @@ No use credenciales reales, cookies exportadas ni cuentas personales en fixtures
 - Los avisos al shell pasan por `ShellNotices`, que los retiene hasta que el shell hace `bootstrap`; no emita eventos `notice` directamente.
 - No publique gestos ni preferencias que dependan de cancelar la rueda dentro de un `WebContentsView` mientras el POC `gesture-interception-gate` pase.
 - Los errores esperados del IPC son `OmniUserError` con mensaje en español; no lance errores genéricos por entradas de usuario.
+- Agentes: el renderer solo nombra un `browserId`; targets, capacidades CDP, workers y claves nunca salen de main. Un método CDP nuevo solo entra en el allowlist de `ScopedCdpGateway` con una prueba negativa y la traza `npm run agent:compat`; una navegación o entrada iniciada por CDP debe respetar las mismas reglas que la del usuario.
 
 ## Tests esperados
 
-- Cambios puros de dominio/geometría/URL o componentes React aislados: test unitario o de componente con Vitest (suite de 162 tests en `tests/unit/`, con cobertura mediante `@vitest/coverage-v8`).
+- Cambios puros de dominio/geometría/URL o componentes React aislados: test unitario o de componente con Vitest (`tests/unit/`, con cobertura mediante `@vitest/coverage-v8`).
 - Sesión, partición, storage, popup o lifecycle: POC o integración Electron.
 - Flujo visible, restauración o canvas: E2E pequeño y determinista. Los escenarios de lifecycle van en `tests/e2e/runtime-regressions.spec.ts`, con una instancia y un `userData` propios por prueba.
 - Una prueba de regresión debe fallar contra el código anterior a la corrección; compruébelo antes de abrir el PR.

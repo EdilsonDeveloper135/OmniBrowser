@@ -22,3 +22,8 @@ test-results/
 .vscode/
 .idea/
 *.swp
+agent-runtime/dist/
+agent-runtime/build/
+agent-runtime/.venv*/
+__pycache__/
+*.pyc

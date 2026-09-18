@@ -26,6 +26,8 @@ import {
   CARD_BORDER_WIDTH,
   CARD_CONTENT_INSET,
   INTERACTIVE_ZOOM_THRESHOLD,
+  MIN_AGENT_NATIVE_PANE_WIDTH,
+  MIN_AGENT_SPLIT_WIDTH,
   MIN_BROWSER_HEIGHT,
   MIN_BROWSER_WIDTH,
   MINIMIZED_BROWSER_HEIGHT,
@@ -34,7 +36,9 @@ import {
   ZOOM_STEP
 } from '../../shared/constants';
 import {
+  agentSplitPaneWidth,
   boundsForWorldRects,
+  cardBodyWidth,
   clampWorldRect,
   computeCanvasLayout,
   projectCardChrome,
@@ -52,6 +56,8 @@ import {
 } from '../../shared/geometry';
 import type {
   BrowserSnapshot,
+  AgentChatSnapshot,
+  AgentSummary,
   Camera,
   NormalizedViewportRect,
   ScreenRect,
@@ -83,6 +89,12 @@ interface WorkspaceCanvasProps {
   selectedBrowserIds: ReadonlySet<string>;
   fullscreenBrowserId: string | null;
   locateRequest: LocateRequest | null;
+  openAgentPanelIds: ReadonlySet<string>;
+  agentSummaries: ReadonlyMap<string, AgentSummary>;
+  agentSnapshots: ReadonlyMap<string, AgentChatSnapshot>;
+  agentLoadingIds: ReadonlySet<string>;
+  agentErrors: ReadonlyMap<string, string>;
+  agentProviderReady?: boolean;
   onSelectionChange: (ids: Set<string>) => void;
   onFullscreenChange: (browserId: string | null) => void;
   onUpdateBrowserRects: (rects: Map<string, WorldRect>) => void;
@@ -108,6 +120,12 @@ interface WorkspaceCanvasProps {
   onCreateStack: (zoneId: string, browserIds: string[]) => Promise<void>;
   onSelectStackMember: (stackId: string, browserId: string) => Promise<void>;
   onUnstack: (stackId: string) => Promise<void>;
+  onAgentPanelOpenChange: (browserId: string, open: boolean) => void;
+  onAgentSend: (browserId: string, instruction: string) => Promise<void>;
+  onAgentPause: (browserId: string) => Promise<void>;
+  onAgentResume: (browserId: string) => Promise<void>;
+  onAgentStop: (browserId: string) => Promise<void>;
+  onOpenAgentSettings: () => void;
   modalActive?: boolean;
   onInteractionChange: (interaction: ActiveInteraction) => void;
   onViewportChange: (size: { width: number; height: number }) => void;
@@ -182,6 +200,12 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps) {
     selectedBrowserIds,
     fullscreenBrowserId,
     locateRequest,
+    openAgentPanelIds,
+    agentSummaries,
+    agentSnapshots,
+    agentLoadingIds,
+    agentErrors,
+    agentProviderReady = false,
     onSelectionChange,
     onFullscreenChange,
     onUpdateBrowserRects,
@@ -207,6 +231,12 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps) {
     onCreateStack,
     onSelectStackMember,
     onUnstack,
+    onAgentPanelOpenChange,
+    onAgentSend,
+    onAgentPause,
+    onAgentResume,
+    onAgentStop,
+    onOpenAgentSettings,
     modalActive = false,
     onInteractionChange,
     onViewportChange
@@ -308,10 +338,28 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps) {
       const stack = stackByBrowser.get(browser.id);
       const stackHidden = Boolean(stack && !topStackBrowserIds.has(browser.id));
       const globallyHidden = fullscreenBrowserId !== null && fullscreenBrowserId !== browser.id;
-      const nativeHidden = globallyHidden || Boolean(zone?.collapsed) || stackHidden || browser.presentation === 'minimized' || menuBrowserId === browser.id;
       const chromeHidden = globallyHidden || Boolean(zone?.collapsed) || stackHidden;
       const outer = outerScreenRectFor(browser);
       const direct = browser.pin.viewport !== null || fullscreenBrowserId === browser.id;
+      let contentBounds = direct && outer ? screenContentBounds(outer) : undefined;
+      let contentReservedRight: number | undefined;
+      let paneTooNarrow = false;
+      // With its agent panel open the card body is split: the page keeps the left column and React draws the chat on
+      // the right (styles.css). Direct surfaces are drawn at screen scale, world cards at the camera's zoom.
+      if (openAgentPanelIds.has(browser.id) && browser.presentation === 'normal') {
+        if (contentBounds) {
+          const pane = agentSplitPaneWidth(contentBounds.width);
+          paneTooNarrow = pane < MIN_AGENT_NATIVE_PANE_WIDTH;
+          contentBounds = { ...contentBounds, width: Math.max(1, pane) };
+        } else {
+          const body = cardBodyWidth(browser.worldRect.width);
+          const pane = agentSplitPaneWidth(body);
+          paneTooNarrow = pane < MIN_AGENT_NATIVE_PANE_WIDTH;
+          contentReservedRight = body - pane;
+        }
+      }
+      const nativeHidden = globallyHidden || Boolean(zone?.collapsed) || stackHidden || browser.presentation === 'minimized'
+        || menuBrowserId === browser.id || paneTooNarrow;
       return {
         id: browser.id,
         worldRect: browser.worldRect,
@@ -321,14 +369,15 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps) {
         nativeHidden,
         chromeHidden,
         surfaceLayer: fullscreenBrowserId === browser.id ? 'immersive' as const : browser.pin.viewport ? 'pinned' as const : 'normal' as const,
-        screenContentBounds: direct && outer ? screenContentBounds(outer) : undefined,
-        screenChromeBounds: (direct || browser.presentation === 'minimized') && outer ? outer : undefined
+        screenContentBounds: contentBounds,
+        screenChromeBounds: (direct || browser.presentation === 'minimized') && outer ? outer : undefined,
+        ...(contentReservedRight === undefined ? {} : { contentReservedRight })
       };
     });
     const origin = { x: viewport.x, y: viewport.y };
     const occluderRects = [...occluders.screen, ...occluders.world.map((area) => projectWorldArea(area, snapshot.camera, origin))];
     return computeCanvasLayout(cards, snapshot.camera, viewport, occluderRects);
-  }, [snapshot.browsers, snapshot.camera, viewport, occluders, zoneById, stackByBrowser, topStackBrowserIds, fullscreenBrowserId, menuBrowserId, outerScreenRectFor]);
+  }, [snapshot.browsers, snapshot.camera, viewport, occluders, zoneById, stackByBrowser, topStackBrowserIds, fullscreenBrowserId, menuBrowserId, outerScreenRectFor, openAgentPanelIds]);
 
   useEffect(() => {
     const committer = new LayoutCommitter((batch) => window.omniBrowser.workspace.commitLayout(batch), logBridgeError('aplicar el layout nativo'));
@@ -367,7 +416,10 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps) {
 
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
-      if (event.code === 'Space' && !(event.target instanceof HTMLInputElement) && !(event.target instanceof HTMLSelectElement)) spaceHeldRef.current = true;
+      // Space+drag pans, but not while typing: an address, a profile name or an instruction for an agent.
+      const typing = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement
+        || event.target instanceof HTMLSelectElement || (event.target instanceof HTMLElement && event.target.isContentEditable);
+      if (event.code === 'Space' && !typing) spaceHeldRef.current = true;
       if (event.key === 'Escape' && fullscreenBrowserId) onFullscreenChange(null);
     };
     const up = (event: KeyboardEvent) => { if (event.code === 'Space') spaceHeldRef.current = false; };
@@ -516,7 +568,8 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps) {
     beginGesture(event, { kind: 'cards', browserIds: ids }, (pointer) => {
       const current = pointerInWorld(pointer);
       if (!current) return;
-      let resized = resizeWorldRect(startRect, direction, current.x - startPointer.x, current.y - startPointer.y, MIN_BROWSER_WIDTH, MIN_BROWSER_HEIGHT);
+      const minimumWidth = openAgentPanelIds.has(browser.id) ? MIN_AGENT_SPLIT_WIDTH : MIN_BROWSER_WIDTH;
+      let resized = resizeWorldRect(startRect, direction, current.x - startPointer.x, current.y - startPointer.y, minimumWidth, MIN_BROWSER_HEIGHT);
       if (snapshot.preferences.snapEnabled) {
         const snapped = snapResizedWorldRect(resized, direction, snapTargets, cameraRef.current.zoom);
         resized = snapped.rect;
@@ -533,7 +586,8 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps) {
     const startPointer = pointerInWorld(event);
     if (!startPointer) return;
     const starts = new Map(selectedTransformBrowsers.map((browser) => [browser.id, browser.worldRect]));
-    const minimumScaleX = Math.max(...selectedTransformBrowsers.map((browser) => MIN_BROWSER_WIDTH / browser.worldRect.width));
+    const minimumScaleX = Math.max(...selectedTransformBrowsers.map((browser) =>
+      (openAgentPanelIds.has(browser.id) ? MIN_AGENT_SPLIT_WIDTH : MIN_BROWSER_WIDTH) / browser.worldRect.width));
     const minimumScaleY = Math.max(...selectedTransformBrowsers.map((browser) => MIN_BROWSER_HEIGHT / browser.worldRect.height));
     beginGesture(event, { kind: 'cards', browserIds: selectedTransformIds }, (pointer) => {
       const current = pointerInWorld(pointer);
@@ -697,6 +751,34 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps) {
     onFullscreenChange(fullscreenBrowserId === browser.id ? null : browser.id);
   };
 
+  const toggleAgentPanel = (browser: BrowserSnapshot) => {
+    const opening = !openAgentPanelIds.has(browser.id);
+    if (opening) {
+      const stack = stackByBrowser.get(browser.id);
+      const ids = stack?.browserIds ?? [browser.id];
+      // Main rejects geometry changes of locked or viewport-pinned cards, so those keep their size and the page pane
+      // narrows (or yields to the chat) instead.
+      const resizable = !browser.pin.viewport && ids.every((id) => !browserById.get(id)?.positionLocked);
+      if (resizable && browser.worldRect.width < MIN_AGENT_SPLIT_WIDTH) {
+        const expanded = { ...browser.worldRect, width: MIN_AGENT_SPLIT_WIDTH };
+        onUpdateBrowserRects(new Map(ids.map((id) => [id, expanded])));
+      }
+      const viewportPin = browser.pin.viewport;
+      if (viewportPin && viewport && viewport.width > 0) {
+        const minimumPinnedWidth = Math.min(1, MIN_AGENT_SPLIT_WIDTH / viewport.width);
+        if (viewportPin.width < minimumPinnedWidth) {
+          void onSetViewportPin(browser.id, {
+            ...viewportPin,
+            x: Math.min(viewportPin.x, 1 - minimumPinnedWidth),
+            width: minimumPinnedWidth
+          });
+        }
+      }
+      if (browser.presentation === 'minimized') void onSetPresentation(ids, 'normal');
+    }
+    onAgentPanelOpenChange(browser.id, opening);
+  };
+
   const latestCardActions = useRef<BrowserCardActions | null>(null);
   useLayoutEffect(() => {
     latestCardActions.current = {
@@ -720,7 +802,13 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps) {
       fullscreen: setFullscreen,
       menuOpenChange: (browser, open) => setMenuBrowserId(open ? browser.id : null),
       selectStackMember: (stack, browserId) => void onSelectStackMember(stack.id, browserId),
-      unstack: (stack) => void onUnstack(stack.id)
+      unstack: (stack) => void onUnstack(stack.id),
+      toggleAgentPanel,
+      sendAgentInstruction: (browser, instruction) => void onAgentSend(browser.id, instruction),
+      pauseAgent: (browser) => void onAgentPause(browser.id),
+      resumeAgent: (browser) => void onAgentResume(browser.id),
+      stopAgent: (browser) => void onAgentStop(browser.id),
+      openAgentSettings: onOpenAgentSettings
     };
   });
   // One identity for the lifetime of the canvas; every call runs the logic of the latest commit.
@@ -747,7 +835,13 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps) {
       fullscreen: (browser) => latest().fullscreen(browser),
       menuOpenChange: (browser, open) => latest().menuOpenChange(browser, open),
       selectStackMember: (stack, browserId) => latest().selectStackMember(stack, browserId),
-      unstack: (stack) => latest().unstack(stack)
+      unstack: (stack) => latest().unstack(stack),
+      toggleAgentPanel: (browser) => latest().toggleAgentPanel(browser),
+      sendAgentInstruction: (browser, instruction) => latest().sendAgentInstruction(browser, instruction),
+      pauseAgent: (browser) => latest().pauseAgent(browser),
+      resumeAgent: (browser) => latest().resumeAgent(browser),
+      stopAgent: (browser) => latest().stopAgent(browser),
+      openAgentSettings: () => latest().openAgentSettings()
     };
   }, []);
 
@@ -761,6 +855,12 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps) {
     return (
       <BrowserCard
         actions={cardActions}
+        agentError={agentErrors.get(browser.id) ?? null}
+        agentLoading={agentLoadingIds.has(browser.id)}
+        agentPanelOpen={openAgentPanelIds.has(browser.id)}
+        agentProviderReady={agentProviderReady}
+        agentSnapshot={agentSnapshots.get(browser.id) ?? null}
+        agentSummary={agentSummaries.get(browser.id) ?? null}
         browser={browser}
         key={`${surface}-${browser.id}`}
         multiSelected={selectedBrowserIds.size > 1 && selectedBrowserIds.has(browser.id)}
