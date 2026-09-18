@@ -20,6 +20,7 @@ import { displayDomain } from '../../shared/urls';
 import { profileColor } from '../lib/profile-colors';
 import { browserMatchesSidebarSearch, buildSidebarTreeIndex, normalizeSidebarSearch } from '../lib/sidebar-tree';
 import { useEventCallback } from '../lib/use-event-callback';
+import { Favicon } from './Favicon';
 
 export type SidebarDropDestination =
   | { kind: 'pinned' }
@@ -41,13 +42,6 @@ interface ProfileRailProps {
   onToggleSidebarPin: (browser: BrowserSnapshot) => void;
   onSelectStackMember: (stackId: string, browserId: string) => void;
   onDropBrowser: (browserId: string, destination: SidebarDropDestination) => void;
-}
-
-function favicon(browser: BrowserSnapshot) {
-  const domain = displayDomain(browser.url);
-  return browser.runtime.faviconKey
-    ? <img alt="" className="sidebar-favicon" src={`omnibrowser://app/favicon/${encodeURIComponent(browser.runtime.faviconKey)}`} />
-    : <span className="sidebar-favicon-fallback">{domain.charAt(0).toUpperCase() || '•'}</span>;
 }
 
 interface SidebarBrowserRowProps {
@@ -76,7 +70,7 @@ const SidebarBrowserRow = memo(function SidebarBrowserRow({ browser, stackId, se
       role="button"
       tabIndex={0}
     >
-      {favicon(browser)}
+      <Favicon browser={browser} variant="sidebar" />
       <span className="sidebar-browser-copy">
         <strong>{browser.title || displayDomain(browser.url)}</strong>
         <small>{displayDomain(browser.url)}</small>
@@ -131,7 +125,8 @@ export function ProfileRail({
   const lastDragAt = useRef(0);
   const query = normalizeSidebarSearch(search);
 
-  const tree = useMemo(() => buildSidebarTreeIndex(snapshot), [snapshot.browsers, snapshot.browserOrder, snapshot.zones, snapshot.stacks]);
+  const { browsers, browserOrder, zones, stacks } = snapshot;
+  const tree = useMemo(() => buildSidebarTreeIndex({ browsers, browserOrder, zones, stacks }), [browsers, browserOrder, zones, stacks]);
   const visibleIds = useMemo(() => new Set(tree.orderedBrowsers.filter((browser) => browserMatchesSidebarSearch(browser, query)).map((browser) => browser.id)), [tree.orderedBrowsers, query]);
   const submit = async () => {
     if (!name.trim() || busy) return;

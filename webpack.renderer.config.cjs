@@ -8,10 +8,11 @@ module.exports = (_env, { mode }) => ({
   module: {
     rules: [
       ...rules,
-      { test: /\.css$/, use: [MiniCssExtractPlugin.loader, 'css-loader'] }
+      { test: /\.css$/, use: [MiniCssExtractPlugin.loader, 'css-loader'] },
+      { test: /\.(svg|png|ico|woff2?)$/, type: 'asset/resource' }
     ]
   },
   plugins: [new MiniCssExtractPlugin({ filename: '[name].css' })],
-  resolve: { extensions: ['.ts', '.tsx', '.js', '.css'] },
+  resolve: { extensions: ['.ts', '.tsx', '.js', '.json', '.css'] },
   optimization: { minimize: mode === 'production' }
 });

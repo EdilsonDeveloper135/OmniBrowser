@@ -23,7 +23,8 @@
     "src/**/*.tsx",
     "tests/**/*.ts",
     "*.ts",
+    "*.mts",
     "forge.env.d.ts"
   ],
-  "exclude": ["node_modules", ".webpack", "out", "**/* 2.ts", "**/* 2.tsx"]
+  "exclude": ["node_modules", ".webpack", "out"]
 }

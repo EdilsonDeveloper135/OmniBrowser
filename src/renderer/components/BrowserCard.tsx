@@ -18,9 +18,11 @@ import {
   X
 } from 'lucide-react';
 import { memo, useEffect, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { sameRect } from '../../shared/geometry';
 import type { BrowserSnapshot, ProfileRecord, StackRecord, WorldRect } from '../../shared/schemas';
 import { displayDomain } from '../../shared/urls';
 import { profileColor } from '../lib/profile-colors';
+import { Favicon } from './Favicon';
 
 export type ResizeDirection = 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'nw';
 
@@ -62,17 +64,6 @@ interface BrowserCardProps {
   stack?: StackRecord;
   stackBrowsers: BrowserSnapshot[];
   actions: BrowserCardActions;
-}
-
-function Favicon({ browser }: { browser: BrowserSnapshot }) {
-  const domain = displayDomain(browser.url);
-  return browser.runtime.faviconKey
-    ? <img alt="" className="browser-favicon" src={`omnibrowser://app/favicon/${encodeURIComponent(browser.runtime.faviconKey)}`} />
-    : <span className="favicon-fallback" aria-hidden="true">{domain.charAt(0).toUpperCase() || '•'}</span>;
-}
-
-function sameRect(a: WorldRect, b: WorldRect): boolean {
-  return a === b || (a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height);
 }
 
 function sameBrowsers(a: readonly BrowserSnapshot[], b: readonly BrowserSnapshot[]): boolean {

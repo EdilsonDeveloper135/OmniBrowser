@@ -26,8 +26,9 @@
 | popup privilegiado | handler explícito; mismas preferencias/sesión; adopción como tarjeta |
 | escalada por permisos | permission check/request y device handlers deny-by-default; se conserva la lista por defecto de clases USB protegidas |
 | descarga no atribuible o silenciosa | sólo se acepta `will-download` de un `webContents.id` registrado; diálogo nativo sin `setSavePath`; ruta y nombre nunca expuestos al shell ni persistidos; cancelación y borrado del parcial al cerrar el browser, reasignarlo o salir |
-| protocolo externo | allowlist + URL parseada + confirmación nativa; un solo diálogo a la vez y 5 s de enfriamiento por página, para que un bucle de `mailto:` no bloquee el workspace |
+| protocolos externos | allowlist + URL parseada + confirmación nativa; un solo diálogo a la vez y 5 s de enfriamiento por página, para que un bucle de `mailto:` no bloquee el workspace |
 | diálogos JavaScript en bucle | `safeDialogs` permite al usuario impedir más diálogos de una página |
+| bloqueo o solapamiento por prompts | se prohíbe `window.prompt()` en el shell; los diálogos de entrada usan `PromptModal` (`.native-occluder` con `data-occluder-type="prompt-modal"`), garantizando flujo asíncrono, aislamiento y ocultamiento de vistas nativas subyacentes |
 | persistencia corrupta/inyectada | límite de tamaño aplicado también al escribir, JSON/Zod, migraciones explícitas, `lstat`/`O_NOFOLLOW` sin seguir symlinks, escritura `0600` temporal+fsync+rename de primario y backup, preservación sin sobrescritura de archivos ilegibles o de esquemas futuros |
 | URLs remotas que rompen el guardado | captura saneada: sin esquemas bloqueados, URLs ≤ 4096 caracteres, títulos ≤ 512, índice activo reasignado |
 | dos procesos sobre el mismo perfil | bloqueo de instancia única; `userData` de desarrollo separado del paquete |
@@ -73,8 +74,8 @@ Todo cambio que conceda un permiso, añada un protocolo, expanda el preload, per
 2. test negativo que demuestre el límite;
 3. revisión del sender IPC y CSP;
 4. repetición de POC relevantes;
-5. actualización de este documento y del ADR si cambia una decisión.
+5. actualización de este documento y de los [registros de decisiones arquitectónicas (ADRs)](adr/) correspondientes si cambia una decisión.
 
 Consulte [SECURITY.md](../SECURITY.md) para reportar una vulnerabilidad.
 
-La evidencia y las limitaciones de las herramientas automáticas están registradas en [la auditoría de dependencias y hardening](security-audit.md).
+La evidencia y las limitaciones de las herramientas automáticas están registradas en [la auditoría de dependencias y hardening](security-audit.md). Los fundamentos arquitectónicos de aislamiento y persistencia se detallan en [ADR 0001](adr/0001-engine-and-profile-model.md) y [ADR 0002](adr/0002-atomic-persistence-and-corruption-recovery.md).

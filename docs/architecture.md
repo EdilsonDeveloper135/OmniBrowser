@@ -85,8 +85,10 @@ Las superficies nativas se componen **por encima de todo el shell**. `computeCan
 - no está suspendida ni caída y el zoom es de al menos 50 %;
 - su content slot está completamente dentro del canvas (las tarjetas parcialmente fuera muestran el placeholder React);
 - no la cubre el rectángulo exterior (cabecera, borde, handles y anillo de selección) de ninguna tarjeta con mayor z;
-- no la cubre un overlay del shell marcado como oclusor: avisos, toolbar de selección y navegación del canvas, fijos al viewport, o etiquetas de zona, chips de zonas colapsadas y el menú de la tarjeta, que se dibujan dentro del mundo. Estos últimos se registran en coordenadas world y se proyectan con la cámara de cada layout, de modo que siguen ocluyendo en su nueva posición tras un pan o zoom;
+- no la cubre un overlay del shell marcado como oclusor: avisos, toolbar de selección y navegación del canvas, fijos al viewport, el diálogo modal accesible `PromptModal` (`.native-occluder` con `data-occluder-type="prompt-modal"` que reemplaza al síncrono `window.prompt`), o etiquetas de zona, chips de zonas colapsadas y el menú de la tarjeta, que se dibujan dentro del mundo. Estos últimos se registran en coordenadas world y se proyectan con la cámara de cada layout, de modo que siguen ocluyendo en su nueva posición tras un pan o zoom;
 - su zona no está colapsada, no está minimizada y, si pertenece a un stack, es su miembro superior.
+
+El árbol React está protegido en su raíz por `ErrorBoundary` para aislar fallos de componentes sin provocar pantallas en blanco. Todas las comparaciones de rectángulos de layout y content slot emplean la utilidad centralizada `sameRect` de `src/shared/geometry.ts`.
 
 El minimapa cede: se oculta mientras una superficie visible cubre su esquina y vuelve cuando deja de estar cubierto. Una tarjeta ocluida muestra su título y dominio; al seleccionarla sube al frente y recupera el contenido vivo.
 
@@ -142,7 +144,7 @@ Si una página se bloquea, su vista se oculta, la tarjeta muestra "La vista dej�
 
 ## Favicons y descargas
 
-`BrowserRuntime` escucha `page-favicon-updated` y sólo acepta URLs HTTP(S) emitidas por ese `WebContents`. `FaviconCache` recupera con la `Session` del perfil, sigue como máximo cinco redirecciones HTTP(S), acepta únicamente AVIF/GIF/JPEG/PNG/WebP/ICO (SVG queda fuera), limita cada respuesta a 256 KiB y guarda hasta 256 entradas en memoria. El shell recibe una clave SHA-256 opaca y carga `omnibrowser://app/favicon/<key>`; la CSP no se amplía a hosts remotos y la caché se destruye al cerrar.
+`BrowserRuntime` escucha `page-favicon-updated` y sólo acepta URLs HTTP(S) emitidas por ese `WebContents`. `FaviconCache` recupera con la `Session` del perfil, sigue como máximo cinco redirecciones HTTP(S), acepta únicamente AVIF/GIF/JPEG/PNG/WebP/ICO (SVG queda fuera), limita cada respuesta a 256 KiB y guarda hasta 256 entradas en memoria. El shell recibe una clave SHA-256 opaca y carga `omnibrowser://app/favicon/<key>` mediante el componente compartido `Favicon.tsx` (`src/renderer/components/Favicon.tsx`), proporcionando un icono fallback consistente de globo terráqueo; la CSP no se amplía a hosts remotos y la caché se destruye al cerrar.
 
 Las descargas sólo se aceptan si `will-download` puede asociar el `webContents.id` a un browser registrado de esa misma sesión. Electron conserva el diálogo nativo con `setSaveDialogOptions`; OmniBrowser nunca llama a `setSavePath`, no conoce ni persiste la ruta elegida y sólo publica progreso agregado, agrupado a intervalos de 100 ms. Cerrar el browser, reasignarlo a otro perfil o salir de la aplicación cancela sus items activos y Chromium elimina el archivo parcial. Un archivo que el usuario ya aceptó puede permanecer en disco, también si provino de un perfil Private.
 
@@ -159,6 +161,14 @@ Los snapshots enviados al shell no incluyen el historial de navegación; el rend
 Los avisos de navegación o restauración de un browser Private son deliberadamente genéricos: no interpolan su dominio, URL ni título.
 
 Los eventos son discriminados: snapshot, estado de browser, click nativo con modificador Shift, `Escape` nativo en superficie inmersiva, estado de guardado y aviso. El renderer nunca elige nombres de canal ni invoca IPC genérico.
+
+## Registros de decisiones arquitectónicas (ADRs)
+
+Para un análisis a fondo de los fundamentos y alternativas evaluadas, consulte:
+- [ADR 0001: Motor Electron, WebContentsView y particiones por perfil](adr/0001-engine-and-profile-model.md)
+- [ADR 0002: Persistencia atómica en disco y recuperación ante corrupción](adr/0002-atomic-persistence-and-corruption-recovery.md)
+- [ADR 0003: Composición nativa WebContentsView en ventana única y gestión de oclusores](adr/0003-single-window-canvas-layout-and-native-occlusion.md)
+- [ADR 0004: Política de compuerta de gestos y gestión de eventos de rueda no cancelables](adr/0004-gesture-gating-and-wheel-event-handling.md)
 
 ## Rendimiento
 

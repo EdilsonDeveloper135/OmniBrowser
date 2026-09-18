@@ -3,15 +3,16 @@
 ## Código y evidencia
 
 - [ ] La versión y el changelog están actualizados.
-- [ ] `npm ci` se ejecuta con Node 24.21.0 y el lockfile no cambia.
-- [ ] `npm run verify` pasa.
+- [ ] `npm ci` se ejecuta con Node 24.21.0 (`.nvmrc`) y el lockfile no cambia.
+- [ ] `npm run verify` pasa (TypeScript, ESLint y 162 tests unitarios y de componentes con Vitest).
+- [ ] Todos los registros de decisiones arquitectónicas en `docs/adr/` ([ADR 0001 a 0004](adr/)) están al día y reflejan el estado del código.
 - [ ] Los cinco POC pasan en arm64 y x64, con captura compuesta del canvas; `docs/poc-results/` solo cambia si la captura se revisó.
 - [ ] `npm run test:e2e` pasa en arm64 y x64.
 - [ ] `npm audit --omit=dev` no reporta vulnerabilidades runtime.
 - [ ] `npm audit` solo contiene las excepciones vigentes de `docs/security-audit.md`, y sus condiciones de retirada se revisaron.
 - [ ] `npm run test:perf` y `npm run bench` se compararon con la última observación registrada en la misma máquina.
 - [ ] Las compuertas manuales de `docs/qa-inventory.md` (trackpad en Apple Silicon e Intel, diálogo nativo de descarga en perfiles persistente y Private, revisión visual) están ejecutadas o registradas como bloqueo con su motivo.
-- [ ] Los gestos que dependen de cancelar la rueda dentro de un `WebContentsView` siguen sin toggle público, salvo nueva evidencia del POC de gestos y de la matriz física.
+- [ ] Los gestos que dependen de cancelar la rueda dentro de un `WebContentsView` siguen sin toggle público (conforme a `docs/adr/0004-gesture-gating-and-wheel-event-handling.md`), salvo nueva evidencia del POC de gestos y de la matriz física.
 - [ ] Las capturas de QA se revisaron a 1440×900 y 1040×680.
 - [ ] Se verificó manualmente aislamiento Personal/Trabajo con la fixture.
 - [ ] Si se prueba OAuth real, se usa una cuenta desechable autorizada y no se guardan credenciales en evidencias.
@@ -21,6 +22,9 @@
 - [ ] `nodeIntegration=false`, `contextIsolation=true`, `sandbox=true` en contenido remoto.
 - [ ] Los handlers de permiso siguen deny-by-default.
 - [ ] Descargas y protocolos no admitidos siguen bloqueados.
+- [ ] Los diálogos modales de usuario usan `PromptModal` con `.native-occluder` y no `window.prompt()` síncrono (conforme a `docs/adr/0003-single-window-canvas-layout-and-native-occlusion.md`).
+- [ ] El shell React está protegido por `ErrorBoundary` para evitar pantallas blancas por excepciones de componentes.
+- [ ] La persistencia respeta la semántica atómica 0600 y recuperación ante corrupción (conforme a `docs/adr/0002-atomic-persistence-and-corruption-recovery.md`).
 - [ ] `npm start` sigue ligado a `localhost`.
 - [ ] El preload no expone IPC genérico.
 - [ ] Los fuses del binario empaquetado se inspeccionaron.

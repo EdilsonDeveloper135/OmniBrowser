@@ -5,6 +5,7 @@ coverage/
 playwright-report/
 test-results/
 .DS_Store
+._*
 *.log
 *.dmg
 *.zip
@@ -16,3 +17,8 @@ test-results/
 *.cer
 *.p8
 *.p12
+*.tsbuildinfo
+.vitest/
+.vscode/
+.idea/
+*.swp

@@ -5,7 +5,7 @@ module.exports = [
     use: {
       loader: 'ts-loader',
       options: {
-        transpileOnly: false,
+        transpileOnly: true,
         compilerOptions: { noEmit: false }
       }
     }

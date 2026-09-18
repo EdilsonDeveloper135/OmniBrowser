@@ -45,7 +45,7 @@ El repositorio fija todas las versiones directas y compromete `package-lock.json
 ## Comandos
 
 ```bash
-npm run verify             # TypeScript, ESLint y tests unitarios
+npm run verify             # TypeScript, ESLint y 162 tests unitarios y de componentes
 npm run test:poc           # almacenamiento, canvas, compuerta de gestos, popups y recursos
 npm run test:e2e           # package de producción + Playwright Electron
 npm run package            # genera OmniBrowser.app
@@ -95,7 +95,13 @@ React shell (omnibrowser://app)
                    └─ Session Chromium por perfil
 ```
 
-El contenido remoto nunca recibe el preload del shell, Node.js, `ipcRenderer` ni objetos Electron. React dibuja el chrome y calcula los rectángulos; el proceso principal posiciona los `WebContentsView` nativos. Consulte [la arquitectura detallada](docs/architecture.md), [el ADR de motor y perfiles](docs/adr/0001-engine-and-profile-model.md) y [el modelo de seguridad](docs/security-model.md).
+El contenido remoto nunca recibe el preload del shell, Node.js, `ipcRenderer` ni objetos Electron. React dibuja el chrome y calcula los rectángulos; el proceso principal posiciona los `WebContentsView` nativos. La interfaz del shell está protegida por `ErrorBoundary` y los diálogos modales usan `PromptModal` con la clase `.native-occluder` para evitar ser perforados por vistas Chromium. Las comparaciones geométricas usan `sameRect` centralizado. Consulte:
+- [Arquitectura detallada](docs/architecture.md)
+- [ADR 0001: Motor y modelo de perfiles](docs/adr/0001-engine-and-profile-model.md)
+- [ADR 0002: Persistencia atómica y recuperación ante corrupción](docs/adr/0002-atomic-persistence-and-corruption-recovery.md)
+- [ADR 0003: Composición nativa WebContentsView y oclusión](docs/adr/0003-single-window-canvas-layout-and-native-occlusion.md)
+- [ADR 0004: Compuerta de gestos y eventos de rueda](docs/adr/0004-gesture-gating-and-wheel-event-handling.md)
+- [Modelo de seguridad](docs/security-model.md)
 
 ## Datos locales y privacidad
 

@@ -31,8 +31,16 @@ Documentación de referencia: [Electron Session](https://www.electronjs.org/docs
 | canvas nativo | pasa | pan/zoom/bounds/Retina, ocultamiento y elevación por re-add |
 | popup/opener | pasa | misma sesión, opener, `postMessage`, navegación y `window.close` |
 | recursos/suspensión | pasa | métricas 1/5/10, ocultamiento, destrucción y wake con perfil/URL/historial |
+| gestos de trackpad | pasa | rueda no cancelable antes de la página; compuerta cerrada (ADR 0004) |
 
 Entorno validado: macOS 27.0, Apple M4 Pro arm64, 48 GiB, Electron 44.4.1. El gate x64 se ejecuta en `macos-15-intel`; no se declara aprobado localmente.
+
+## Decisiones arquitectónicas complementarias
+
+Este ADR fundacional se complementa con decisiones específicas detalladas en:
+- [ADR 0002: Persistencia atómica en disco y recuperación ante corrupción](0002-atomic-persistence-and-corruption-recovery.md)
+- [ADR 0003: Composición nativa WebContentsView en ventana única y gestión de oclusores](0003-single-window-canvas-layout-and-native-occlusion.md)
+- [ADR 0004: Política de compuerta de gestos y gestión de eventos de rueda no cancelables](0004-gesture-gating-and-wheel-event-handling.md)
 
 ## Alternativas consideradas
 
@@ -67,7 +75,7 @@ Costes y riesgos:
 - una vista nativa no participa del stacking CSS ordinario;
 - OAuth puede rechazar un user agent embebido aunque la sesión sea correcta;
 - Playwright Electron es experimental;
-- cambios de Electron requieren repetir los cuatro POC antes de actualizar la versión fijada.
+- cambios de Electron requieren repetir los cinco POC antes de actualizar la versión fijada.
 
 ## Regla de reconsideración
 

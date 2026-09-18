@@ -66,12 +66,14 @@ La versión pública disponible de Electronegativity no analiza completamente El
 Por eso los controles materiales se verifican directamente:
 
 - TypeScript/ESLint y tests negativos de IPC, URL y esquemas;
+- suite de 162 pruebas unitarias y de componentes (con soporte de cobertura nativa `@vitest/coverage-v8` y compatibilidad con Node 24 mediante `@types/node@24`), validando `PromptModal` (`.native-occluder`), resiliencia ante excepciones del renderer con `ErrorBoundary`, confinamiento de rutas en `shell-paths`, y políticas de `main-guards` y `security-policy`;
 - inspección de preferencias de cada `WebContentsView` remoto;
 - handlers deny-by-default de permisos y descargas;
 - `codesign --verify --deep --strict` sobre el `.app` y los artefactos DMG/ZIP extraídos;
 - inspección de fuses del ejecutable empaquetado;
 - comprobación de `CFBundleIdentifier` y `LSMinimumSystemVersion`;
-- revisión manual del modelo de confianza en [`security-model.md`](security-model.md).
+- revisión manual del modelo de confianza en [`security-model.md`](security-model.md);
+- formalización de garantías de seguridad en los registros arquitectónicos [ADR 0001](adr/0001-engine-and-profile-model.md), [ADR 0002](adr/0002-atomic-persistence-and-corruption-recovery.md) y [ADR 0003](adr/0003-single-window-canvas-layout-and-native-occlusion.md).
 
 ## Limitaciones de la evidencia
 

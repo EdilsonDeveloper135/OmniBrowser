@@ -26,8 +26,7 @@ export function browserMatchesSidebarSearch(browser: BrowserSnapshot, normalized
   return !normalizedQuery || normalizeSidebarSearch(`${browser.title} ${displayDomain(browser.url)} ${browser.url}`).includes(normalizedQuery);
 }
 
-/** Builds all sidebar relationships in linear time; no tree row performs a global browser scan. */
-export function buildSidebarTreeIndex(snapshot: WorkspaceSnapshot): SidebarTreeIndex {
+export function buildSidebarTreeIndex(snapshot: Pick<WorkspaceSnapshot, 'browsers' | 'browserOrder' | 'zones' | 'stacks'>): SidebarTreeIndex {
   const browserById = new Map(snapshot.browsers.map((browser) => [browser.id, browser]));
   const orderedBrowsers = snapshot.browserOrder
     .map((id) => browserById.get(id))

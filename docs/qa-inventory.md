@@ -1,6 +1,6 @@
 # QA inventory del MVP
 
-Este inventario vincula cada afirmación visible del MVP con una comprobación funcional y una evidencia visual. El almacenamiento profundo (IndexedDB, Cache Storage, service workers y caché HTTP) se cubre en los POC deterministas; la suite E2E cubre el flujo completo de la aplicación.
+Este inventario vincula cada afirmación visible del MVP con una comprobación funcional y una evidencia visual. La suite automatizada comprende **162 pruebas unitarias y de componentes** (Vitest con `@vitest/coverage-v8`), 5 POCs deterministas en Node/Electron y 25 escenarios E2E con Playwright. Las decisiones arquitectónicas subyacentes se formalizan en los registros [ADR 0001 a 0004](adr/). El almacenamiento profundo (IndexedDB, Cache Storage, service workers y caché HTTP) se cubre en los POC deterministas; la suite E2E cubre el flujo completo de la aplicación.
 
 | Área | Estado o control | Comprobación funcional | Evidencia visual |
 |---|---|---|---|
@@ -22,17 +22,17 @@ Este inventario vincula cada afirmación visible del MVP con una comprobación f
 | Ventana mínima | 1040×680 | regiones esenciales dentro del viewport, sin scroll | `implementation-minimum-window-arm64.png` |
 | Vista densa | tres navegadores superpuestos | z-order/foco y minimapa | `implementation-primary-arm64.png` |
 | Alineación nativa | pan por arrastre y rueda, arrastre, resize, teclado | error ≤ 1 DIP entre `WebContentsView` y content slot | `runtime-regressions.spec.ts` |
-| Oclusión | tarjeta superior, minimapa, aviso visible, menú de tarjeta abierto y etiqueta de zona tras un pan | ninguna superficie visible cubre controles React; las vistas cubiertas por el menú vuelven al cerrarlo; los overlays del mundo siguen ocluyendo en su nueva posición | `runtime-regressions.spec.ts`, `geometry.test.ts` |
-| Resiliencia | arranque sin red, aviso emitido antes de que el shell se suscriba, crash del renderer, URL remota > 4096, título que cambia sin parar | el shell arranca y muestra el aviso aunque su script cargue tarde, la tarjeta se recupera y el workspace se guarda | `runtime-regressions.spec.ts`, `shell-notices.test.ts` |
-| Lifecycle | wake/sleep/close repetidos, popups tras suspender/cerrar el opener, quit, segunda instancia | sin vistas duplicadas ni tarjetas perdidas; el proceso termina y conserva el estado | `runtime-regressions.spec.ts` |
-| Seguridad remota | bridge, Node.js, `omnibrowser://`, CORS, permisos, `<webview>`, CSP del shell, bucle de `mailto:` | todo bloqueado o denegado; un solo diálogo externo | `runtime-regressions.spec.ts` |
-| Favicons | caché local opaca | esquema/redirecciones/allowlist raster-ICO/tamaño limitados; SVG rechazado y CSP sin ampliar | `favicon-cache.test.ts` |
+| Oclusión | tarjeta superior, minimapa, aviso visible, menú de tarjeta abierto, etiqueta de zona tras un pan y diálogo `PromptModal` | ninguna superficie visible cubre controles React; las vistas cubiertas por menús o `PromptModal` (`.native-occluder`) vuelven al cerrarlos; los overlays del mundo siguen ocluyendo en su nueva posición; comparaciones mediante `sameRect` | `runtime-regressions.spec.ts`, `geometry.test.ts`, `prompt-modal.test.tsx` |
+| Resiliencia | arranque sin red, aviso emitido antes de que el shell se suscriba, crash del renderer, fallo en árbol React (`ErrorBoundary`), URL remota > 4096, título que cambia sin parar | el shell arranca y muestra el aviso aunque su script cargue tarde, los fallos de render se capturan en `ErrorBoundary` con acción de reintento, la tarjeta se recupera y el workspace se guarda | `runtime-regressions.spec.ts`, `shell-notices.test.ts`, `error-boundary.test.tsx` |
+| Lifecycle | wake/sleep/close repetidos, popups tras suspender/cerrar el opener, quit, segunda instancia | sin vistas duplicadas ni tarjetas perdidas; el proceso termina y conserva el estado | `runtime-regressions.spec.ts`, `browser-runtime.test.ts` |
+| Seguridad remota | bridge, Node.js, `omnibrowser://`, CORS, permisos, `<webview>`, CSP del shell, bucle de `mailto:` | todo bloqueado o denegado; un solo diálogo externo | `runtime-regressions.spec.ts`, `main-guards.test.ts` |
+| Favicons | caché local opaca y componente reutilizable | esquema/redirecciones/allowlist raster-ICO/tamaño limitados; SVG rechazado y CSP sin ampliar; componente compartido `Favicon.tsx` con icono fallback | `favicon-cache.test.ts`, `favicon.test.tsx` |
 | Descargas | sólo browser registrado y diálogo del sistema | progreso agregado sin nombre ni carpeta en snapshots, `userData`, logs ni consola; cerrar el browser, pasar un browser Private a un perfil persistente o salir cancela y borra el parcial | `security-policy.test.ts`, `runtime-regressions.spec.ts`; diálogo manual |
 | Rastros Private | cookie, `localStorage`, `sessionStorage`, IndexedDB, título, URL y descarga de una página Private | tras salir y tras reiniciar, nada de eso aparece en `userData` (UTF-8 y UTF-16LE) y el archivo aceptado sigue en su carpeta | `runtime-regressions.spec.ts` |
 | Preferencias no publicadas | `historySwipeEnabled` | el IPC rechaza `true` y un valor `true` en disco se carga como `false` | `workspace-model.test.ts` |
-| Migración | V1→V2 y recuperación | defaults, filtrado legacy Temporal y copia `workspace.v1-backup.json` 0600 que no se sobrescribe | `workspace-store.test.ts` |
+| Migración | V1→V2 y recuperación | defaults, filtrado legacy Temporal y copia `workspace.v1-backup.json` 0600 que no se sobrescribe | `workspace-store.test.ts`, `workspace-migrations.test.ts` |
 | Rendimiento organizativo | árbol, búsqueda, snap, pan, eventos de runtime y vistas retenidas con 500 browsers | derivación lineal funcional; frames, hilo principal, CPU, IPC y memoria como observaciones reproducibles sin gate de tiempo | `sidebar-tree.test.ts`, `npm run test:perf`, `npm run bench` |
-| Entradas inválidas | búsqueda implícita, vacío, > 4096, `javascript:`, `file:` | mensajes en español sin excepciones en main | `runtime-regressions.spec.ts` |
+| Entradas inválidas | búsqueda implícita, vacío, > 4096, `javascript:`, `file:`, prompts modales cancelados o vacíos | mensajes en español sin excepciones en main; `PromptModal` valida y descarta entradas vacías | `runtime-regressions.spec.ts`, `prompt-modal.test.tsx` |
 
 Escenarios exploratorios incluidos: URL con esquema bloqueado; reasignación de perfil ida/vuelta; suspensión seguida de reactivación; reinicio con estado Private y durable mezclados; reducción a ventana mínima después de restaurar.
 

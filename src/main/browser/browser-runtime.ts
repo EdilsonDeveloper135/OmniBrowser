@@ -7,6 +7,7 @@ import {
   TOOLBAR_HEIGHT
 } from '../../shared/constants';
 import { OmniUserError } from '../../shared/errors';
+import { sameBounds } from '../../shared/geometry';
 import type { BrowserRecord, BrowserRuntimeState, LayoutBatch, ScreenRect } from '../../shared/schemas';
 import { displayDomain, isAllowedNavigationUrl, isPersistableNavigationUrl, normalizeNavigationInput, parseExternalUrl } from '../../shared/urls';
 import { sanitizeHistory } from '../domain/navigation-history';
@@ -46,10 +47,6 @@ interface BrowserRuntimeOptions {
   onNativeBrowserClick?: (browserId: string, shiftKey: boolean) => void;
   onNativeBrowserEscape?: (browserId: string) => void;
   onContentsDestroyed?: (contentsId: number) => void;
-}
-
-function sameBounds(a: ScreenRect | null, b: ScreenRect): boolean {
-  return a !== null && a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
 }
 
 export class BrowserRuntime {

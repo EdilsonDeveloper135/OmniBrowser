@@ -298,3 +298,18 @@ export function computeCanvasLayout(cards: readonly CanvasCard[], camera: Camera
   });
   return { items, minimapCovered };
 }
+
+export type RectLike = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export function sameRect<T extends RectLike>(a: T | null | undefined, b: T | null | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+}
+
+export const sameBounds = sameRect;

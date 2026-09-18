@@ -6,7 +6,7 @@ import {
   WORKSPACE_SCHEMA_VERSION
 } from '../../shared/constants';
 import { OmniUserError } from '../../shared/errors';
-import { clampWorldRect } from '../../shared/geometry';
+import { clampWorldRect, sameRect } from '../../shared/geometry';
 import {
   browserRecordSchema,
   cameraSchema,
@@ -58,10 +58,6 @@ function now(): string {
 
 function clone<T>(value: T): T {
   return structuredClone(value);
-}
-
-function sameRect(a: WorldRect, b: WorldRect): boolean {
-  return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
 }
 
 function sameCamera(a: Camera, b: Camera): boolean {

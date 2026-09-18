@@ -7,6 +7,7 @@ import type { BrowserSnapshot, Camera, ProfileRecord, WorkspaceSnapshot, WorldRe
 import { raiseToTop } from '../shared/z-order';
 import { NoticeToast, type NoticeState } from './components/NoticeToast';
 import { ProfileRail, type SidebarDropDestination } from './components/ProfileRail';
+import { PromptModal } from './components/PromptModal';
 import { StatusBar } from './components/StatusBar';
 import { Toolbar } from './components/Toolbar';
 import { WorkspaceCanvas, type LocateRequest } from './components/WorkspaceCanvas';
@@ -23,6 +24,11 @@ export function App() {
   const [locateRequest, setLocateRequest] = useState<LocateRequest | null>(null);
   const [notice, setNotice] = useState<NoticeState | null>(null);
   const [fatalError, setFatalError] = useState<string | null>(null);
+  const [pendingZoneCreation, setPendingZoneCreation] = useState<{
+    browserIds: string[];
+    profileId: string;
+    defaultName: string;
+  } | null>(null);
   const interactionRef = useRef<ActiveInteraction>(null);
   const noticeSequenceRef = useRef(0);
   const locateSequenceRef = useRef(0);
@@ -146,16 +152,31 @@ export function App() {
   };
 
   const createZone = async (browserIds: string[]) => {
+    if (!snapshot) return;
     const browsers = browserIds.map((id) => snapshot.browsers.find((browser) => browser.id === id)).filter((browser): browser is BrowserSnapshot => Boolean(browser));
     const profileIds = new Set(browsers.map((browser) => browser.profileId));
     if (browsers.length === 0 || profileIds.size !== 1) {
       pushNotice('warning', 'Una zona sólo puede contener navegadores del mismo perfil.');
       return;
     }
-    const name = window.prompt('Nombre de la nueva zona', `Zona ${snapshot.zones.length + 1}`)?.trim();
-    if (!name) return;
+    const defaultName = `Zona ${snapshot.zones.length + 1}`;
+    setPendingZoneCreation({
+      browserIds,
+      profileId: browsers[0]!.profileId,
+      defaultName
+    });
+  };
+
+  const handleConfirmZone = async (name: string) => {
+    if (!pendingZoneCreation || !snapshot) return;
+    const { browserIds, profileId } = pendingZoneCreation;
+    setPendingZoneCreation(null);
     const color = ZONE_COLORS[snapshot.zones.length % ZONE_COLORS.length]!;
-    await run(() => window.omniBrowser.workspace.createZone(browsers[0]!.profileId, name, color, browserIds), applySnapshot);
+    await run(() => window.omniBrowser.workspace.createZone(profileId, name, color, browserIds), applySnapshot);
+  };
+
+  const handleCancelZone = () => {
+    setPendingZoneCreation(null);
   };
 
   const closeBrowser = async (browserId: string) => {
@@ -234,6 +255,7 @@ export function App() {
       <WorkspaceCanvas
         fullscreenBrowserId={fullscreenBrowserId}
         locateRequest={locateRequest}
+        modalActive={pendingZoneCreation !== null}
         noticeId={notice?.id ?? null}
         onAssignProfile={(browserId, profileId) => run(() => window.omniBrowser.browsers.assignProfile(browserId, profileId), applySnapshot).then(() => undefined)}
         onBack={(browserId) => run(() => window.omniBrowser.browsers.back(browserId)).then(() => undefined)}
@@ -267,6 +289,17 @@ export function App() {
       />
       <StatusBar browserCount={snapshot.browsers.length} />
       {notice ? <NoticeToast notice={notice} onClose={() => setNotice(null)} /> : null}
+      <PromptModal
+        isOpen={pendingZoneCreation !== null}
+        title="Crear nueva zona"
+        description="Asigna un nombre a la zona para agrupar los navegadores seleccionados."
+        placeholder="Nombre de la zona"
+        defaultValue={pendingZoneCreation?.defaultName ?? ''}
+        confirmLabel="Crear zona"
+        cancelLabel="Cancelar"
+        onConfirm={handleConfirmZone}
+        onCancel={handleCancelZone}
+      />
     </div>
   );
 }

@@ -20,6 +20,20 @@ body:
       options: [Apple Silicon arm64, Intel x64]
     validations:
       required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Área afectada
+      options:
+        - "Canvas / Composición nativa / Oclusión"
+        - "Perfiles / Sesiones / Aislamiento"
+        - "Persistencia / Guardado / workspace.json"
+        - "Navegación / Vistas Chromium / Popups"
+        - "Interfaz React / Modales (PromptModal) / Sidebar"
+        - "Rendimiento / Gestos / Rueda"
+        - "Empaquetado / Build / Dependencias"
+    validations:
+      required: true
   - type: input
     id: macos
     attributes:

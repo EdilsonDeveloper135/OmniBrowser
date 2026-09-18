@@ -1,24 +1,24 @@
-# OmniBrowser visual specification
+# Especificación visual de OmniBrowser
 
-The primary screen concept in `omnibrowser-primary-screen.png` is the visual contract for the MVP shell. It is not shipped as application UI; every visible control, label, card, and canvas surface is implemented as native React/CSS UI around native Chromium views.
+El concepto de pantalla principal en [`omnibrowser-primary-screen.png`](omnibrowser-primary-screen.png) constituye el contrato visual para el shell del MVP. No se distribuye como una imagen estática de UI; cada control visible, etiqueta, tarjeta y superficie de canvas está implementado como interfaz nativa React/CSS rodeando las vistas nativas de Chromium.
 
-## Locked design system
+## Sistema de diseño establecido
 
-- **Background:** cool graphite canvas (`#0b1118`) with a low-contrast 24 px dot grid.
-- **Chrome:** near-black (`#101720`) with 1 px cool-gray separators.
-- **Remote surfaces:** neutral white (`#ffffff`), never beige or cream.
-- **Primary accent:** cobalt blue (`#1877f2`) for focus, selection, and the create action.
-- **Profiles:** Personal blue, Trabajo amber, Private violet; profile colors remain identity accents, not global themes.
-- **Typography:** Inter/system sans fallback, 11–14 px application chrome, strong but restrained card titles.
-- **Geometry:** 10–12 px radii, 1 px borders, compact 32–36 px controls, hard-edged low-opacity shadows.
-- **Container model:** open infinite canvas with a single profile rail and toolbar; browser cards are movable windows, not a dashboard grid.
-- **Motion:** 140–180 ms focus/hover transitions; no decorative motion; respect reduced-motion preferences.
+- **Fondo:** canvas grafito frío (`#0b1118`) con una cuadrícula de puntos de bajo contraste a 24 px.
+- **Chrome:** casi negro (`#101720`) con separadores gris frío de 1 px.
+- **Superficies remotas:** blanco neutro (`#ffffff`), jamás beige o crema.
+- **Acento primario:** azul cobalto (`#1877f2`) para foco, selección y la acción de creación.
+- **Perfiles:** Personal azul, Trabajo ámbar, Private violeta; los colores de perfil se mantienen como acentos de identidad, nunca temas globales.
+- **Tipografía:** Inter/sans-serif del sistema como fallback, 11–14 px para el chrome de la aplicación, títulos de tarjeta legibles y contenidos.
+- **Geometría:** radios de 10–12 px, bordes de 1 px, controles compactos de 32–36 px, sombras nítidas de baja opacidad.
+- **Modelo de contenedor:** canvas infinito abierto con un rail de perfiles único y barra de herramientas; las tarjetas de navegador son ventanas móviles, no una cuadrícula rígida de dashboard.
+- **Movimiento:** transiciones de 140–180 ms en foco/hover; sin animaciones decorativas; respeto a las preferencias del sistema de reducción de movimiento (`prefers-reduced-motion`).
 
-## Required primary-screen inventory
+## Inventario de pantalla principal requerida
 
-- Organization rail with Pinned, expandable profiles/zones/stacks, open browsers, search, and `+ Perfil`.
-- Canvas toolbar with `Abrir navegador`, snap, recenter, zoom, and `Guardado`; URL/history controls belong to the active browser header.
-- Multiple freely placed browser cards with profile identity and selected state.
-- A semantic sleeping card, minimap, and concise canvas status line.
-- Zone frames/chips, compact minimized cards, stack selector, multi-selection toolbar, viewport pins, and immersive full screen.
-- Native Chromium content occupies only each card's interior rectangle; React owns headers, handles, toolbar, and overlays.
+- Rail de organización con fijados (Pinned), perfiles/zonas/stacks desplegables, navegadores abiertos, búsqueda y `+ Perfil`.
+- Barra de herramientas del canvas con `Abrir navegador`, snap, centrado, zoom y estado de `Guardado`; los controles de URL e historial pertenecen al encabezado del navegador activo.
+- Múltiples tarjetas de navegador ubicadas libremente con identidad de perfil y estado de selección.
+- Tarjeta en suspensión semántica, minimapa y línea concisa de estado del canvas.
+- Marcos/chips de zona, tarjetas minimizadas compactas, selector de stack, barra de selección múltiple, fijados al viewport y pantalla completa inmersiva reversible.
+- El contenido nativo de Chromium ocupa exclusivamente el rectángulo interior de cada tarjeta (*content slot*); React gestiona encabezados, tiradores de redimensionado, barras de herramientas y capas superpuestas (*overlays*).

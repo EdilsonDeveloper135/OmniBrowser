@@ -13,6 +13,7 @@ import {
   X
 } from 'lucide-react';
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -39,6 +40,7 @@ import {
   projectCardChrome,
   projectWorldArea,
   roundZoom,
+  sameRect,
   screenAreaToWorld,
   screenToWorld,
   snapMovedWorldRect,
@@ -106,16 +108,13 @@ interface WorkspaceCanvasProps {
   onCreateStack: (zoneId: string, browserIds: string[]) => Promise<void>;
   onSelectStackMember: (stackId: string, browserId: string) => Promise<void>;
   onUnstack: (stackId: string) => Promise<void>;
+  modalActive?: boolean;
   onInteractionChange: (interaction: ActiveInteraction) => void;
   onViewportChange: (size: { width: number; height: number }) => void;
 }
 
-function sameScreenRect(a: ScreenRect | null, b: ScreenRect | null): boolean {
-  return a === b || (a !== null && b !== null && a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height);
-}
-
 function sameScreenRects(a: readonly ScreenRect[], b: readonly ScreenRect[]): boolean {
-  return a.length === b.length && a.every((rect, index) => sameScreenRect(rect, b[index] ?? null));
+  return a.length === b.length && a.every((rect, index) => sameRect(rect, b[index]));
 }
 
 function sameWorldAreas(a: readonly WorldArea[], b: readonly WorldArea[]): boolean {
@@ -208,6 +207,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps) {
     onCreateStack,
     onSelectStackMember,
     onUnstack,
+    modalActive = false,
     onInteractionChange,
     onViewportChange
   } = props;
@@ -254,14 +254,14 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps) {
     const measure = () => {
       const rect = element.getBoundingClientRect();
       const next = snapRect(rect.left, rect.top, rect.right, rect.bottom);
-      setViewport((current) => sameScreenRect(current, next) ? current : next);
+      setViewport((current) => sameRect(current, next) ? current : next);
     };
-    const observer = new ResizeObserver(measure);
-    observer.observe(element);
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+    observer?.observe(element);
     window.addEventListener('resize', measure);
     measure();
     return () => {
-      observer.disconnect();
+      observer?.disconnect();
       window.removeEventListener('resize', measure);
     };
   }, []);
@@ -284,9 +284,9 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps) {
     setOccluders((current) => sameScreenRects(current.screen, screen) && sameWorldAreas(current.world, world) ? current : { screen, world });
   // Overlays are the notice, the selection toolbar, zone labels and chips and the selected card's menu: they only move
   // or appear when geometry, zones, stacks, the selection, the menu, full screen or the semantic threshold change.
-  }, [noticeId, viewport, selectedBrowserIds, snapshot.selectedBrowserId, fullscreenBrowserId, menuBrowserId, lowZoom, cardGeometry, snapshot.zones, snapshot.stacks]);
+  }, [noticeId, modalActive, viewport, selectedBrowserIds, snapshot.selectedBrowserId, fullscreenBrowserId, menuBrowserId, lowZoom, cardGeometry, snapshot.zones, snapshot.stacks, snapshot.camera]);
 
-  const outerScreenRectFor = (browser: BrowserSnapshot): ScreenRect | null => {
+  const outerScreenRectFor = useCallback((browser: BrowserSnapshot): ScreenRect | null => {
     if (!viewport) return null;
     if (fullscreenBrowserId === browser.id) return { ...viewport };
     const pin = browser.pin.viewport;
@@ -299,7 +299,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps) {
     const rect = visualRect(browser);
     const projected = projectCardChrome(rect, snapshot.camera, { x: viewport.x, y: viewport.y });
     return snapRect(projected.x, projected.y, projected.x + projected.width, projected.y + projected.height);
-  };
+  }, [viewport, fullscreenBrowserId, snapshot.camera]);
 
   const layout = useMemo(() => {
     if (!viewport) return null;
@@ -328,7 +328,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps) {
     const origin = { x: viewport.x, y: viewport.y };
     const occluderRects = [...occluders.screen, ...occluders.world.map((area) => projectWorldArea(area, snapshot.camera, origin))];
     return computeCanvasLayout(cards, snapshot.camera, viewport, occluderRects);
-  }, [snapshot.browsers, snapshot.camera, viewport, occluders, zoneById, stackByBrowser, topStackBrowserIds, fullscreenBrowserId, menuBrowserId]);
+  }, [snapshot.browsers, snapshot.camera, viewport, occluders, zoneById, stackByBrowser, topStackBrowserIds, fullscreenBrowserId, menuBrowserId, outerScreenRectFor]);
 
   useEffect(() => {
     const committer = new LayoutCommitter((batch) => window.omniBrowser.workspace.commitLayout(batch), logBridgeError('aplicar el layout nativo'));
@@ -616,7 +616,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps) {
     event.preventDefault();
   };
 
-  const centerOn = (browser: BrowserSnapshot, zoom: number) => {
+  const centerOn = useCallback((browser: BrowserSnapshot, zoom: number) => {
     if (!viewport) return;
     const rect = visualRect(browser);
     onUpdateCamera(() => ({
@@ -624,7 +624,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps) {
       panX: viewport.width / 2 - (rect.x + rect.width / 2) * zoom,
       panY: viewport.height / 2 - (rect.y + rect.height / 2) * zoom
     }));
-  };
+  }, [viewport, onUpdateCamera]);
 
   useEffect(() => {
     if (!locateRequest || handledLocateToken.current === locateRequest.token || !viewport) return;
@@ -650,7 +650,7 @@ export function WorkspaceCanvas(props: WorkspaceCanvasProps) {
       centerOn(browser, zoom);
     }
   // Re-run while an ancestor is being expanded or a stack member is being promoted.
-  }, [locateRequest, viewport, browserById, zoneById, stackByBrowser, onSetZoneCollapsed, onSelectStackMember, onSelectionChange, onFocus]);
+  }, [locateRequest, viewport, browserById, zoneById, stackByBrowser, onSetZoneCollapsed, onSelectStackMember, onSelectionChange, onFocus, centerOn]);
 
   useEffect(() => {
     if (fullscreenBrowserId && !snapshot.browsers.some((browser) => browser.id === fullscreenBrowserId)) onFullscreenChange(null);

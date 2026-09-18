@@ -283,3 +283,31 @@ Comprobaciones manuales exigidas:
 - **Pantallas de CI:** la hipótesis del recorte se apoya en issues de `actions/runner-images` y en el mecanismo reproducido, pero debe confirmarse con la resolución registrada y las trazas de la próxima ejecución.
 - **Retención de vistas (H-14)** y **temporal previo al diálogo (H-16):** requieren decisión de producto.
 - **`image-size` en `appdmg`:** excepción documentada con condición de retirada.
+
+## 12. Pasada complementaria: componentes accesibles, cobertura y formalización de ADRs
+
+Posteriormente a la pasada inicial de hardening, se ejecutó una consolidación integral de componentes de UI, resiliencia y pruebas unitarias/de componentes:
+
+1. **Sustitución de `window.prompt()` por `PromptModal`:**
+   - Se eliminaron las invocaciones síncronas a `window.prompt()` en `ProfileRail` y `BrowserCard` para evitar el congelamiento del bucle de eventos del renderer.
+   - Se introdujo `src/renderer/components/PromptModal.tsx`, componente accesible con navegación por teclado (`Escape` para cancelar, `Enter` para enviar, foco automático en input) y atributos `.native-occluder` (`data-occluder-type="prompt-modal"`).
+   - `WorkspaceCanvas` detecta el modal como oclusor activo, ocultando las vistas Chromium subyacentes mientras el usuario interactúa con el diálogo.
+
+2. **Resiliencia con `ErrorBoundary`:**
+   - Se implementó `src/renderer/components/ErrorBoundary.tsx` envolviendo el punto de entrada de React en `src/renderer/index.tsx`.
+   - Captura excepciones en el ciclo de vida de renderizado y presenta una pantalla de recuperación con acción "Reintentar", previniendo pantallas blancas irrevocables.
+
+3. **Geometría unificada (`sameRect`) y componente `Favicon`:**
+   - Se centralizó la lógica de comparación de rectángulos en `sameRect` dentro de `src/shared/geometry.ts`.
+   - Se unificó la representación de favicons en `src/renderer/components/Favicon.tsx`, con soporte para iconos seguros de `omnibrowser://app/favicon/<key>` y fallback a icono de globo terráqueo.
+
+4. **Ampliación de la suite de pruebas (162 tests):**
+   - La suite unitaria creció de 112 a **162 tests en 22 archivos**, incorporando pruebas de componentes (`browser-card.test.tsx`, `error-boundary.test.tsx`, `favicon.test.tsx`, `prompt-modal.test.tsx`, `workspace-canvas.test.tsx`) y pruebas unitarias de `browser-runtime.test.ts` y `workspace-migrations.test.ts`.
+   - Se integró `@vitest/coverage-v8` en la configuración de Vitest para soporte nativo de cobertura de código V8.
+   - Se alinearon las dependencias tipadas con `@types/node@24.10.13` para paridad completa con Node 24.
+
+5. **Formalización de registros arquitectónicos (ADRs):**
+   - Se crearon los ADRs fundacionales faltantes:
+     - `docs/adr/0002-atomic-persistence-and-corruption-recovery.md`
+     - `docs/adr/0003-single-window-canvas-layout-and-native-occlusion.md`
+     - `docs/adr/0004-gesture-gating-and-wheel-event-handling.md`

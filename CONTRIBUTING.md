@@ -1,6 +1,6 @@
 # Contribuir a OmniBrowser
 
-Gracias por ayudar a construir un navegador espacial local y auditable. Antes de abrir un cambio, lea la arquitectura, el ADR y el modelo de seguridad; la separación entre shell confiable, proceso principal y contenido remoto es una restricción de producto, no un detalle opcional.
+Gracias por ayudar a construir un navegador espacial local y auditable. Antes de abrir un cambio, lea la arquitectura ([`docs/architecture.md`](docs/architecture.md)), los registros de decisiones ([`docs/adr/`](docs/adr/)) y el modelo de seguridad ([`docs/security-model.md`](docs/security-model.md)); la separación entre shell confiable, proceso principal y contenido remoto es una restricción de producto, no un detalle opcional.
 
 ## Entorno
 
@@ -40,6 +40,10 @@ No use credenciales reales, cookies exportadas ni cuentas personales en fixtures
 - No introduzca `BrowserView`, `<webview>` ni `file://` para el shell.
 - Conserve el canvas accesible a 1040×680, con `prefers-reduced-motion` y manejable por teclado.
 - Una superficie Chromium nunca debe cubrir controles React: use `computeCanvasLayout` para cualquier overlay nuevo dentro del canvas y márquelo con `native-occluder`. Si el overlay se dibuja dentro de `.canvas-world` se registra en coordenadas world y sigue a la cámara; si se añade estado que lo muestre o lo mueva, inclúyalo en las dependencias de la medición de oclusores de `WorkspaceCanvas`.
+- Diálogos y prompts de interacción: no utilice `window.prompt()` síncrono. Utilice el componente accesible `PromptModal` (que porta la clase `.native-occluder` y `data-occluder-type="prompt-modal"`), permitiendo que las vistas Chromium debajo se oculten mientras el diálogo esté abierto.
+- Manejo de fallos en el shell: todo componente o árbol de UI crítico en React debe aislarse mediante `ErrorBoundary` para evitar pantallas en blanco.
+- Comparaciones geométricas: utilice la utilidad unificada `sameRect` de `src/shared/geometry.ts` en lugar de comparaciones manuales de rectángulos.
+- Favicons: utilice el componente compartido `Favicon.tsx` para una renderización uniforme de iconos de sitios y fallback a globo terráqueo.
 - Las tarjetas y las filas del árbol están memoizadas: páseles callbacks estables (`useEventCallback` o el objeto de acciones del canvas) y datos cuya identidad solo cambie cuando cambia su contenido.
 - Los avisos al shell pasan por `ShellNotices`, que los retiene hasta que el shell hace `bootstrap`; no emita eventos `notice` directamente.
 - No publique gestos ni preferencias que dependan de cancelar la rueda dentro de un `WebContentsView` mientras el POC `gesture-interception-gate` pase.
@@ -47,13 +51,13 @@ No use credenciales reales, cookies exportadas ni cuentas personales en fixtures
 
 ## Tests esperados
 
-- Cambios puros de dominio/geometría/URL: test unitario.
+- Cambios puros de dominio/geometría/URL o componentes React aislados: test unitario o de componente con Vitest (suite de 162 tests en `tests/unit/`, con cobertura mediante `@vitest/coverage-v8`).
 - Sesión, partición, storage, popup o lifecycle: POC o integración Electron.
 - Flujo visible, restauración o canvas: E2E pequeño y determinista. Los escenarios de lifecycle van en `tests/e2e/runtime-regressions.spec.ts`, con una instancia y un `userData` propios por prueba.
 - Una prueba de regresión debe fallar contra el código anterior a la corrección; compruébelo antes de abrir el PR.
 - Rendimiento: `npm run test:perf` antes y después del cambio en la misma máquina, repetido al menos dos veces, y `npm run bench` si toca derivaciones puras; publique las cifras como observaciones, no como gates. En Apple Silicon el tiempo de pared de layout depende de si el hilo corre en núcleos de rendimiento o de eficiencia: compare también script y tarea total antes de atribuir una regresión.
 - Cambio visual: captura actualizada y entrada en el ledger de fidelidad. `OMNIBROWSER_UPDATE_VISUAL_EVIDENCE=1` reemplaza las evidencias versionadas; la del POC de canvas exige una captura compuesta, que en macOS necesita permiso de grabación de pantalla para la terminal (`OMNIBROWSER_REQUIRE_COMPOSITE_CAPTURE=1` convierte su ausencia en error, como en CI).
-- Cambio de Electron: los cinco POC en arm64 y x64, más actualización del ADR. Si falla `gesture-interception-gate`, revise la compuerta de gestos de `docs/architecture.md` antes de tratarlo como regresión.
+- Cambio de Electron: los cinco POC en arm64 y x64, más actualización de los ADRs (`docs/adr/`). Si falla `gesture-interception-gate`, revise la compuerta de gestos de `docs/architecture.md` y `docs/adr/0004-gesture-gating-and-wheel-event-handling.md` antes de tratarlo como regresión.
 
 ## Pull requests
 

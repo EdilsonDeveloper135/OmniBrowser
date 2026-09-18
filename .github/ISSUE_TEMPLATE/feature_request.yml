@@ -3,6 +3,11 @@ description: Propón una mejora compatible con el modelo local-first.
 title: "[Feature]: "
 labels: [enhancement]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Antes de proponer una nueva funcionalidad, consulte [`docs/architecture.md`](../../docs/architecture.md) y los registros de decisiones arquitectónicas en [`docs/adr/`](../../docs/adr/).
+        OmniBrowser sigue un modelo estrictamente local-first (sin nube, sin cuentas remotas ni telemetría).
   - type: textarea
     id: problem
     attributes:
