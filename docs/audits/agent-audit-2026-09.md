@@ -1,7 +1,7 @@
 # Auditoría de los agentes por tarjeta (2026-09-18)
 
 Base: `main` en `b122ff8` más el trabajo sin publicar de los agentes Browser Use por tarjeta
-([ADR 0005](adr/0005-card-scoped-browser-use-agents.md)). Equipo: Apple M4 Pro, macOS 27.0, Node.js 24.21.0 oficial
+([ADR 0005](../adr/0005-card-scoped-browser-use-agents.md)). Equipo: Apple M4 Pro, macOS 27.0, Node.js 24.21.0 oficial
 (tarball verificado contra `SHASUMS256.txt`), Electron 44.4.1, Python 3.12.9, Browser Use 0.13.10 y CDP Use 1.4.5
 instalados desde `requirements.lock` con verificación de hashes.
 
@@ -101,6 +101,6 @@ denegación real del aviso de macOS no se automatizó: es un diálogo de segurid
 - La copia de `out/` dentro de iCloud Drive no pasa `codesign --verify --strict` porque el File Provider añade atributos
   Finder; el mismo paquete verificado fuera de iCloud es válido y la app arranca.
 - La firma Developer ID y la notarización del sidecar siguen pendientes de las credenciales del mantenedor
-  ([checklist](release-checklist.md)); la firma ad hoc local se verificó.
+  ([checklist](../release-checklist.md)); la firma ad hoc local se verificó.
 - Las regiones de captura fuera del viewport y las capturas de página completa siguen el camino CDP, que no responde con
   la tarjeta oculta. Browser Use 0.13.10 no las usa en su bucle (su acción `screenshot` está desactivada).

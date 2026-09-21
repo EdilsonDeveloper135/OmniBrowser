@@ -4,7 +4,7 @@ Fecha de la evidencia local: 2026-09-17. Alcance: código y dependencias fijadas
 
 ## Resultado operativo
 
-Actualizado en la segunda pasada de hardening de 2026-09 ([hardening-2026-09](hardening-2026-09.md)); la pasada anterior está en [engineering-audit](engineering-audit.md).
+Actualizado en la segunda pasada de hardening de 2026-09 ([hardening-2026-09](audits/hardening-2026-09.md)); la pasada anterior está en [engineering-audit](audits/engineering-audit.md).
 
 - `npm audit --omit=dev`: 0 vulnerabilidades en dependencias que se empaquetan como runtime.
 - Audit completo: 33 avisos → 22 (primera pasada) → **4** (1 aviso real, `image-size`, más sus 3 dependientes transitivos). Moderados y críticos: 0.
@@ -45,7 +45,7 @@ GitHub mostraba 8 alertas abiertas en `main` porque Dependabot cuenta una alerta
 - **Endurecimiento adicional.** Sin `host`, el servidor escuchaba en todas las interfaces (`*:3000`); `forge.config.cjs` lo fija a `localhost` (`[::1]:3000`), que es lo que usa la entrada del renderer.
 - **Condición para retirar el override.** Forge estable cuyo `plugin-webpack` declare `webpack-dev-server` ≥ 5.2.6.
 
-La compatibilidad de todos los overrides se verificó además con `npm ci` sobre el lockfile resultante, `verify`, los POC, las E2E, `package` y `make`; los resultados están en [hardening-2026-09](hardening-2026-09.md).
+La compatibilidad de todos los overrides se verificó además con `npm ci` sobre el lockfile resultante, `verify`, los POC, las E2E, `package` y `make`; los resultados están en [hardening-2026-09](audits/hardening-2026-09.md).
 
 ### Excepción restante
 

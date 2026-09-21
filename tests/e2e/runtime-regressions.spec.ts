@@ -8,7 +8,7 @@ import { _electron as electron, expect, test, type ElectronApplication, type Pag
 import electronExecutable from 'electron';
 import { setShellWindowSize } from '../support/app-window';
 
-// Regression coverage for the runtime audits (docs/engineering-audit.md, docs/hardening-2026-09.md). Every test launches
+// Regression coverage for the runtime audits (docs/audits/engineering-audit.md, docs/audits/hardening-2026-09.md). Every test launches
 // its own production-bundle instance with an isolated userData directory so that lifecycle scenarios cannot leak into
 // each other.
 

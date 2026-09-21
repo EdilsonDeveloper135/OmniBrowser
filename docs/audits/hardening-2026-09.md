@@ -31,7 +31,7 @@ Estados: corregido, diferido con motivo, no reproducible, falso positivo, requie
 |---|---|---|---|
 | H-01 | Dependencias | La documentación daba `webpack-dev-server` 5.2.6 por afectado. Los 6 GHSA tienen versión corregida ≤ 5.2.6 y Forge adoptó 5.2.x en `main` sin cambios de runtime (electron/forge#4274, #4329) | corregido: override 5.2.6 y documentación |
 | H-02 | Dependencias | `extract-zip@2.0.1` (2 GHSA altos) no tiene versión corregida; Electron publica el sustituto `@electron-internal/extract-zip`, que `electron@44.4.1` ya usa y que `@electron/packager` ≥ 20.0.1 adoptó | corregido: override con `.app` idéntico y hook de fechas |
-| H-03 | Dependencias | La excepción de `image-size` afirmaba que el proyecto no configura imágenes de DMG; `electron-installer-dmg` pasa siempre su `background.png` a `appdmg`. `image-size@0.7.5` no contiene analizadores JXL/HEIF | diferido con motivo; excepción reescrita en [security-audit.md](security-audit.md) |
+| H-03 | Dependencias | La excepción de `image-size` afirmaba que el proyecto no configura imágenes de DMG; `electron-installer-dmg` pasa siempre su `background.png` a `appdmg`. `image-size@0.7.5` no contiene analizadores JXL/HEIF | diferido con motivo; excepción reescrita en [security-audit.md](../security-audit.md) |
 | H-04 | Dependencias | GitHub mostraba 8 alertas y npm 22: Dependabot cuenta GHSA por manifiesto y había auto-descartado las 2 de `image-size`; npm cuenta cada paquete dependiente | documentado |
 | H-05 | CI/E2E | Las ventanas E2E de 1440×900 dependen del tamaño de la pantalla virtual del runner, que es pequeño y variable (actions/runner-images#9345, #8620, #393). Mecanismo reproducido: macOS reduce una ventana mayor que el área útil al mostrarla (1440×1325 → 1440×1025) | corregido localmente; pendiente de confirmar en CI |
 | H-06 | Producto | Los avisos emitidos antes de que el shell se suscriba se pierden. El aviso de fallo de carga del browser restaurado sale 3–11 ms después de `bootstrap` en esta máquina; con el script del shell servido 700 ms tarde se pierde en 3 de 3 arranques, igual que en el fallo x64 de CI | corregido: `ShellNotices` retiene los avisos hasta `bootstrap`; unitarias y E2E que falla sin la corrección |
@@ -53,7 +53,7 @@ No hay marcadores `TODO`, `FIXME`, `XXX` ni `HACK` en el código, las pruebas o 
 
 ## 4. Dependencias
 
-Detalle, procedencia y condiciones de retirada en [security-audit.md](security-audit.md).
+Detalle, procedencia y condiciones de retirada en [security-audit.md](../security-audit.md).
 
 | | Antes | Después |
 |---|---:|---:|
@@ -102,7 +102,7 @@ La E2E `wheel input over a live browser scrolls only its page, selected or not, 
 
 - `historySwipeEnabled` sigue en `false`, no hay toggle público y el contrato IPC rechaza `true`.
 - **Matriz física: no ejecutada.** No hay Mac Intel y en esta sesión no se autorizó el control de la UI de OmniBrowser. Aunque se ejecutara, la evidencia anterior impide consumir la rueda antes de la página, así que no bastaría para publicar el gesto.
-- **Para reabrirla:** una versión de Electron con un hook cancelable para `WebMouseWheelEvent` (el POC fallará al detectarlo), o la decisión de producto de no componer contenido vivo en tarjetas inactivas (por ejemplo, mostrar una captura) para que el shell reciba la rueda. Después, matriz física en Apple Silicon e Intel con el protocolo de [qa-inventory.md](qa-inventory.md).
+- **Para reabrirla:** una versión de Electron con un hook cancelable para `WebMouseWheelEvent` (el POC fallará al detectarlo), o la decisión de producto de no componer contenido vivo en tarjetas inactivas (por ejemplo, mostrar una captura) para que el shell reciba la rueda. Después, matriz física en Apple Silicon e Intel con el protocolo de [qa-inventory.md](../qa-inventory.md).
 
 ## 7. Rendimiento
 
@@ -225,7 +225,7 @@ Código: `ElectronDownloadManagerDelegate` solo fija el destino cuando se cierra
 
 ### Bloqueado
 
-Pulsar **Guardar** y **Cancelar** en el diálogo nativo (perfil persistente y Private) requiere control de la UI, que no se autorizó en esta sesión. Protocolo en [qa-inventory.md](qa-inventory.md).
+Pulsar **Guardar** y **Cancelar** en el diálogo nativo (perfil persistente y Private) requiere control de la UI, que no se autorizó en esta sesión. Protocolo en [qa-inventory.md](../qa-inventory.md).
 
 ## 9. Auditoría funcional
 

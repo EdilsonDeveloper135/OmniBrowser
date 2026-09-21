@@ -4,6 +4,10 @@ Todos los cambios relevantes de OmniBrowser se documentarán en este archivo. El
 
 ## [Unreleased]
 
+### Docs
+
+- Auditorías de estado puntual (agentes, técnica integral, hardening posterior al canvas) reagrupadas en `docs/audits/`; los documentos vivos (`architecture.md`, `security-model.md`, `security-audit.md`, `qa-inventory.md`, `release-checklist.md`) permanecen en `docs/`. Añadido `AGENTS.md` con los límites de cada área para trabajo en paralelo.
+
 ### Added
 
 - Un agente Browser Use por tarjeta ([ADR 0005](docs/adr/0005-card-scoped-browser-use-agents.md)): panel de chat dentro de la tarjeta, cola privada de hasta 20 instrucciones, Pausar/Reanudar/Detener, reanudación de tareas interrumpidas con su progreso, contexto de la conversación para las instrucciones de seguimiento y proveedor OpenAI-compatible con clave cifrada.

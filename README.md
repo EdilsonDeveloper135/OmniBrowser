@@ -147,9 +147,9 @@ Las URLs pueden contener información sensible; trate `workspace.json` como dato
 - [Inventario de QA y compuertas manuales](docs/qa-inventory.md)
 - [Ledger de fidelidad visual](docs/design/fidelity-ledger.md)
 - [Auditoría de dependencias y hardening](docs/security-audit.md)
-- [Auditoría técnica 2026-09: hallazgos, correcciones y mediciones](docs/engineering-audit.md)
-- [Hardening posterior al canvas espacial: dependencias, gestos, descargas y rendimiento](docs/hardening-2026-09.md)
-- [Auditoría de los agentes por tarjeta: hallazgos, correcciones y verificación](docs/agent-audit-2026-09.md)
+- [Auditoría técnica 2026-09: hallazgos, correcciones y mediciones](docs/audits/engineering-audit.md)
+- [Hardening posterior al canvas espacial: dependencias, gestos, descargas y rendimiento](docs/audits/hardening-2026-09.md)
+- [Auditoría de los agentes por tarjeta: hallazgos, correcciones y verificación](docs/audits/agent-audit-2026-09.md)
 - [Checklist de release](docs/release-checklist.md)
 
 Los números de memoria publicados son observaciones de una máquina concreta, no promesas de consumo ni benchmarks generalizables.
